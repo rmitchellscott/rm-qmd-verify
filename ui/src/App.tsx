@@ -417,7 +417,7 @@ function AppContent() {
       {versionInfo && (
         <footer className="fixed bottom-0 left-0 right-0 py-2 bg-background">
           <div className="text-center text-sm text-muted-foreground">
-            <span>Version {versionInfo.version} • </span>
+            <span>{versionInfo.version} • </span>
             <a
               href="https://github.com/rmitchellscott/rm-qmd-verify"
               target="_blank"
