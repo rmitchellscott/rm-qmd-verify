@@ -1,13 +1,20 @@
-FROM rust:1.83-alpine AS qmldiff-builder
+FROM --platform=$BUILDPLATFORM tonistiigi/xx:1.7.0 AS xx
 
-RUN apk add --no-cache git musl-dev
+FROM --platform=$BUILDPLATFORM rust:1.83-alpine AS qmldiff-builder
+
+COPY --from=xx / /
+
+RUN apk add --no-cache git musl-dev clang lld
+
+ARG TARGETPLATFORM
 
 WORKDIR /build
 RUN git clone --depth 1 https://github.com/asivery/qmldiff.git && \
     cd qmldiff && \
-    cargo build --release
+    xx-cargo build --release && \
+    xx-verify target/*/release/qmldiff
 
-FROM node:24-alpine AS frontend-builder
+FROM --platform=$BUILDPLATFORM node:24-alpine AS frontend-builder
 
 WORKDIR /build
 
@@ -19,11 +26,13 @@ COPY ui/ ./
 
 RUN npm run build
 
-FROM golang:1.23-alpine AS backend-builder
+FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS backend-builder
+
+COPY --from=xx / /
 
 WORKDIR /build
 
-RUN apk add --no-cache git ca-certificates tzdata
+RUN apk add --no-cache git ca-certificates tzdata clang lld
 
 COPY go.mod go.sum ./
 
@@ -33,17 +42,19 @@ COPY . .
 
 COPY --from=frontend-builder /build/dist ./ui/dist
 
+ARG TARGETPLATFORM
 ARG VERSION=dev
 ARG COMMIT=unknown
 ARG BUILD_TIME=unknown
 
-RUN CGO_ENABLED=0 GOOS=linux go build \
+RUN CGO_ENABLED=0 xx-go build -trimpath \
     -ldflags="-w -s \
     -X github.com/rmitchellscott/rm-qmd-verify/internal/version.Version=${VERSION} \
     -X github.com/rmitchellscott/rm-qmd-verify/internal/version.Commit=${COMMIT} \
     -X github.com/rmitchellscott/rm-qmd-verify/internal/version.BuildTime=${BUILD_TIME}" \
     -o rm-qmd-verify \
-    .
+    . && \
+    xx-verify rm-qmd-verify
 
 FROM alpine:3.20
 
@@ -51,7 +62,7 @@ RUN apk add --no-cache ca-certificates tzdata
 
 WORKDIR /app
 
-COPY --from=qmldiff-builder /build/qmldiff/target/release/qmldiff /app/bin/qmldiff
+COPY --from=qmldiff-builder /build/qmldiff/target/*/release/qmldiff /app/bin/qmldiff
 
 COPY --from=backend-builder /build/rm-qmd-verify /app/rm-qmd-verify
 
