@@ -1,0 +1,51 @@
+# Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output
+*.out
+/dist
+
+# Dependencies
+/vendor/
+node_modules/
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build artifacts
+ui/dist/
+
+# Data
+/data/
+/hashtables/
+*.db
+*.sqlite
+
+# Logs
+*.log
+
+# Temporary files
+/tmp/
+
+# Dev
+docker-compose.dev.yaml
