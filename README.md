@@ -7,7 +7,7 @@ Web application and API for verifying QMD (QML Diff) files against multiple hash
 - Parallel verification against all available hashtables
 - Compatibility matrix showing which OS/device combinations are supported
 - REST API for programmatic access
-- [Command-line tool](https://github.com/rmitchellscott/rm-qml-verify-cli)
+- [Command-line tool](https://github.com/rmitchellscott/rm-qmd-verify-cli)
 
 ## Quick Start
 
