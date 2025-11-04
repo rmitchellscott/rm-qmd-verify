@@ -4,50 +4,34 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sync"
 
 	"github.com/google/uuid"
-	"github.com/rmitchellscott/rm-qmd-verify/internal/hashtab"
+	"github.com/rmitchellscott/rm-qmd-verify/pkg/hashtab"
 	"github.com/rmitchellscott/rm-qmd-verify/internal/logging"
+	"github.com/rmitchellscott/rm-qmd-verify/internal/qmd"
 )
 
 type ComparisonResult struct {
-	Hashtable   string `json:"hashtable"`
-	OSVersion   string `json:"os_version"`
-	Device      string `json:"device"`
-	Compatible  bool   `json:"compatible"`
-	ErrorDetail string `json:"error_detail,omitempty"`
+	Hashtable     string   `json:"hashtable"`
+	OSVersion     string   `json:"os_version"`
+	Device        string   `json:"device"`
+	Compatible    bool     `json:"compatible"`
+	ErrorDetail   string   `json:"error_detail,omitempty"`
+	MissingHashes []uint64 `json:"missing_hashes,omitempty"`
 }
 
 type Service struct {
-	binaryPath     string
 	hashtabService *hashtab.Service
 }
 
 func NewService(binaryPath string, hashtabService *hashtab.Service) *Service {
 	return &Service{
-		binaryPath:     binaryPath,
 		hashtabService: hashtabService,
 	}
 }
 
-var hashErrorRegex = regexp.MustCompile(`(?:Cannot resolve hash|Couldn't resolve the hashed identifier)\s+(\d+)`)
-
-func sanitizeQmldiffError(rawOutput string) string {
-	matches := hashErrorRegex.FindStringSubmatch(rawOutput)
-	if len(matches) >= 2 {
-		return fmt.Sprintf("Cannot resolve hash %s", matches[1])
-	}
-
-	if rawOutput == "" {
-		return "Unknown error"
-	}
-
-	return "qmldiff comparison failed"
-}
 
 func (s *Service) CompareAgainstAll(qmdContent []byte) ([]ComparisonResult, error) {
 	hashtables := s.hashtabService.GetHashtables()
@@ -83,31 +67,20 @@ func (s *Service) compareAgainstHashtable(qmdContent []byte, hashtable *hashtab.
 		Device:    hashtable.Device,
 	}
 
-	tempDir, err := os.MkdirTemp("", "qmd-compare-*")
+	verifyResult, err := qmd.VerifyAgainstHashtab(string(qmdContent), hashtable)
 	if err != nil {
-		result.ErrorDetail = fmt.Sprintf("failed to create temp dir: %v", err)
-		logging.Error(logging.ComponentQMLDiff, "Failed to create temp dir: %v", err)
-		return result
-	}
-	defer os.RemoveAll(tempDir)
-
-	tempQMD := filepath.Join(tempDir, "temp.qmd")
-	err = os.WriteFile(tempQMD, qmdContent, 0644)
-	if err != nil {
-		result.ErrorDetail = fmt.Sprintf("failed to write temp file: %v", err)
-		logging.Error(logging.ComponentQMLDiff, "Failed to write temp file: %v", err)
+		result.ErrorDetail = fmt.Sprintf("verification failed: %v", err)
+		logging.Error(logging.ComponentQMLDiff, "Verification failed for %s: %v", hashtable.Name, err)
 		return result
 	}
 
-	cmd := exec.Command(s.binaryPath, "hash-diffs", hashtable.Path, tempQMD)
-	output, err := cmd.CombinedOutput()
+	result.Compatible = verifyResult.Compatible
+	result.MissingHashes = verifyResult.MissingHashes
 
-	if err != nil {
-		result.Compatible = false
-		result.ErrorDetail = sanitizeQmldiffError(string(output))
-		logging.Warn(logging.ComponentQMLDiff, "Comparison failed for %s: %v", hashtable.Name, err)
+	if !result.Compatible {
+		result.ErrorDetail = fmt.Sprintf("missing %d hash(es)", len(verifyResult.MissingHashes))
+		logging.Warn(logging.ComponentQMLDiff, "Comparison failed for %s: missing %d hashes", hashtable.Name, len(verifyResult.MissingHashes))
 	} else {
-		result.Compatible = true
 		logging.Info(logging.ComponentQMLDiff, "Comparison succeeded for %s", hashtable.Name)
 	}
 
@@ -115,17 +88,7 @@ func (s *Service) compareAgainstHashtable(qmdContent []byte, hashtable *hashtab.
 }
 
 func (s *Service) TestBinary() error {
-	if _, err := os.Stat(s.binaryPath); os.IsNotExist(err) {
-		return fmt.Errorf("qmldiff binary not found at: %s", s.binaryPath)
-	}
-
-	cmd := exec.Command(s.binaryPath, "--help")
-	err := cmd.Run()
-	if err != nil {
-		return fmt.Errorf("qmldiff binary test failed: %w", err)
-	}
-
-	logging.Info(logging.ComponentQMLDiff, "qmldiff binary test successful: %s", s.binaryPath)
+	logging.Info(logging.ComponentQMLDiff, "Using native Go QMD verification (no binary required)")
 	return nil
 }
 

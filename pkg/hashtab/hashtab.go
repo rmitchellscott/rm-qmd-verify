@@ -7,8 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/rmitchellscott/rm-qmd-verify/internal/logging"
 )
 
 type Hashtab struct {
@@ -36,6 +34,15 @@ func ParseVersion(filename string) (osVersion, device string) {
 	return
 }
 
+func (ht *Hashtab) IsHashlist() bool {
+	for _, val := range ht.Entries {
+		if val != "" {
+			return false
+		}
+	}
+	return true
+}
+
 func Load(path string) (*Hashtab, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -43,6 +50,28 @@ func Load(path string) (*Hashtab, error) {
 	}
 	defer file.Close()
 
+	entries, hashtabVersion, err := loadHashtab(file)
+	if err != nil {
+		return nil, err
+	}
+
+	filename := filepath.Base(path)
+	osVersion, device := ParseVersion(filename)
+
+	if hashtabVersion != "" {
+		osVersion = hashtabVersion
+	}
+
+	return &Hashtab{
+		Name:      filename,
+		Path:      path,
+		OSVersion: osVersion,
+		Device:    device,
+		Entries:   entries,
+	}, nil
+}
+
+func loadHashtab(file *os.File) (map[uint64]string, string, error) {
 	entries := make(map[uint64]string)
 	var hashtabVersion string
 
@@ -53,50 +82,33 @@ func Load(path string) (*Hashtab, error) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("failed to read hash: %w", err)
+			return nil, "", fmt.Errorf("failed to read hash: %w", err)
 		}
 
 		var length uint32
 		err = binary.Read(file, binary.BigEndian, &length)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read length: %w", err)
+			return nil, "", fmt.Errorf("failed to read length: %w", err)
 		}
 
 		data := make([]byte, length)
 		_, err = io.ReadFull(file, data)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read string data: %w", err)
+			return nil, "", fmt.Errorf("failed to read string data: %w", err)
 		}
 
 		str := string(data)
 
 		if hash == 0 {
-			logging.Info(logging.ComponentHashtab, "Found header: %s", str)
 			continue
 		} else if hash == 17607111715072197239 {
 			hashtabVersion = str
-			logging.Info(logging.ComponentHashtab, "Found version entry: %s", str)
 		}
 
 		entries[hash] = str
 	}
 
-	filename := filepath.Base(path)
-	osVersion, device := ParseVersion(filename)
-
-	if hashtabVersion != "" {
-		osVersion = hashtabVersion
-	}
-
-	ht := &Hashtab{
-		Name:      filename,
-		Path:      path,
-		OSVersion: osVersion,
-		Device:    device,
-		Entries:   entries,
-	}
-
-	return ht, nil
+	return entries, hashtabVersion, nil
 }
 
 func DJB2Hash(s string) uint64 {
@@ -105,4 +117,26 @@ func DJB2Hash(s string) uint64 {
 		hash = ((hash << 5) + hash) + uint64(s[i])
 	}
 	return hash
+}
+
+func WriteHashlist(hashes []uint64, outputPath string) error {
+	file, err := os.Create(outputPath)
+	if err != nil {
+		return fmt.Errorf("failed to create output file: %w", err)
+	}
+	defer file.Close()
+
+	for _, hash := range hashes {
+		err := binary.Write(file, binary.BigEndian, hash)
+		if err != nil {
+			return fmt.Errorf("failed to write hash: %w", err)
+		}
+
+		err = binary.Write(file, binary.BigEndian, uint32(0))
+		if err != nil {
+			return fmt.Errorf("failed to write length: %w", err)
+		}
+	}
+
+	return nil
 }

@@ -6,7 +6,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/rmitchellscott/rm-qmd-verify/internal/hashtab"
+	"github.com/rmitchellscott/rm-qmd-verify/pkg/hashtab"
 	"github.com/rmitchellscott/rm-qmd-verify/internal/logging"
 	"github.com/rmitchellscott/rm-qmd-verify/internal/qmldiff"
 )

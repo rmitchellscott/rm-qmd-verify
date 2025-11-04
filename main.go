@@ -14,7 +14,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/rmitchellscott/rm-qmd-verify/internal/config"
 	"github.com/rmitchellscott/rm-qmd-verify/internal/handlers"
-	"github.com/rmitchellscott/rm-qmd-verify/internal/hashtab"
+	"github.com/rmitchellscott/rm-qmd-verify/pkg/hashtab"
 	"github.com/rmitchellscott/rm-qmd-verify/internal/logging"
 	"github.com/rmitchellscott/rm-qmd-verify/internal/qmldiff"
 	"github.com/rmitchellscott/rm-qmd-verify/internal/version"
@@ -46,8 +46,7 @@ func main() {
 		logging.Info(logging.ComponentStartup, "  - %s (%d entries)", ht.Name, len(ht.Entries))
 	}
 
-	qmldiffBinary := config.Get("QMLDIFF_BINARY", "./bin/qmldiff")
-	qmldiffService := qmldiff.NewService(qmldiffBinary, hashtabService)
+	qmldiffService := qmldiff.NewService("", hashtabService)
 
 	r := chi.NewRouter()
 

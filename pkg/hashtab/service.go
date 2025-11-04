@@ -61,6 +61,12 @@ func (s *Service) loadHashtables() error {
 			continue
 		}
 
+		formatType := "hashtab (with strings)"
+		if ht.IsHashlist() {
+			formatType = "hashlist (hash-only)"
+		}
+		logging.Info(logging.ComponentHashtab, "Loaded %s: %s, %d entries, version %s", entry.Name(), formatType, len(ht.Entries), ht.OSVersion)
+
 		s.hashtables = append(s.hashtables, ht)
 
 		fileInfo, err := entry.Info()
@@ -136,6 +142,12 @@ func (s *Service) CheckAndReload() error {
 			logging.Error(logging.ComponentHashtab, "Failed to load hashtable %s: %v", entry.Name(), err)
 			continue
 		}
+
+		formatType := "hashtab (with strings)"
+		if ht.IsHashlist() {
+			formatType = "hashlist (hash-only)"
+		}
+		logging.Info(logging.ComponentHashtab, "Loaded %s: %s, %d entries, version %s", entry.Name(), formatType, len(ht.Entries), ht.OSVersion)
 
 		s.hashtables = append(s.hashtables, ht)
 
