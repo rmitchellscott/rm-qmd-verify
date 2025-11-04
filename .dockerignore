@@ -1,0 +1,43 @@
+# Git
+.git
+.gitignore
+
+# CI/CD
+.github
+
+# Dependencies
+node_modules
+vendor
+
+# Build artifacts
+dist
+ui/dist
+bin
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Documentation
+README.md
+*.md
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode
+.idea
+*.swp
+
+# Data
+data/
+*.db
+
+# Logs
+*.log
+
+# Test files
+*_test.go
