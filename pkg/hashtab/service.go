@@ -15,6 +15,7 @@ type Service struct {
 	dir        string
 	mu         sync.RWMutex
 	modTimes   map[string]time.Time
+	pathByName map[string]string
 }
 
 func NewService(dir string) (*Service, error) {
@@ -22,6 +23,7 @@ func NewService(dir string) (*Service, error) {
 		hashtables: make([]*Hashtab, 0),
 		dir:        dir,
 		modTimes:   make(map[string]time.Time),
+		pathByName: make(map[string]string),
 	}
 
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
@@ -42,78 +44,95 @@ func NewService(dir string) (*Service, error) {
 }
 
 func (s *Service) loadHashtables() error {
-	entries, err := os.ReadDir(s.dir)
-	if err != nil {
-		return fmt.Errorf("failed to read hashtable directory: %w", err)
-	}
+	loadedNames := make(map[string]string)
 
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
+	err := filepath.WalkDir(s.dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
 
-		path := filepath.Join(s.dir, entry.Name())
-		logging.Info(logging.ComponentHashtab, "Loading hashtable: %s", entry.Name())
+		if d.IsDir() {
+			return nil
+		}
+
+		filename := filepath.Base(path)
+
+		if existingPath, exists := loadedNames[filename]; exists {
+			logging.Warn(logging.ComponentHashtab, "Skipping duplicate hashtable file %s (already loaded from %s)", path, existingPath)
+			return nil
+		}
+
+		logging.Info(logging.ComponentHashtab, "Loading hashtable: %s", filename)
 
 		ht, err := Load(path)
 		if err != nil {
-			logging.Error(logging.ComponentHashtab, "Failed to load hashtable %s: %v", entry.Name(), err)
-			continue
+			logging.Error(logging.ComponentHashtab, "Failed to load hashtable %s: %v", filename, err)
+			return nil
 		}
 
 		formatType := "hashtab (with strings)"
 		if ht.IsHashlist() {
 			formatType = "hashlist (hash-only)"
 		}
-		logging.Info(logging.ComponentHashtab, "Loaded %s: %s, %d entries, version %s", entry.Name(), formatType, len(ht.Entries), ht.OSVersion)
+		logging.Info(logging.ComponentHashtab, "Loaded %s: %s, %d entries, version %s", filename, formatType, len(ht.Entries), ht.OSVersion)
 
 		s.hashtables = append(s.hashtables, ht)
+		loadedNames[filename] = path
+		s.pathByName[filename] = path
 
-		fileInfo, err := entry.Info()
+		fileInfo, err := d.Info()
 		if err == nil {
-			s.modTimes[entry.Name()] = fileInfo.ModTime()
+			s.modTimes[path] = fileInfo.ModTime()
 		}
+
+		return nil
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to walk hashtable directory: %w", err)
 	}
 
 	return nil
 }
 
 func (s *Service) CheckAndReload() error {
-	entries, err := os.ReadDir(s.dir)
-	if err != nil {
-		return fmt.Errorf("failed to read hashtable directory: %w", err)
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	currentFiles := make(map[string]bool)
+	currentFiles := make(map[string]time.Time)
 	needsReload := false
 
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
+	err := filepath.WalkDir(s.dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
 
-		filename := entry.Name()
-		currentFiles[filename] = true
+		if d.IsDir() {
+			return nil
+		}
 
-		fileInfo, err := entry.Info()
+		fileInfo, err := d.Info()
 		if err != nil {
-			continue
+			return nil
 		}
 
 		modTime := fileInfo.ModTime()
+		currentFiles[path] = modTime
 
-		if lastMod, exists := s.modTimes[filename]; !exists || !lastMod.Equal(modTime) {
+		if lastMod, exists := s.modTimes[path]; !exists || !lastMod.Equal(modTime) {
 			needsReload = true
-			break
 		}
+
+		return nil
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to walk hashtable directory: %w", err)
 	}
 
 	if !needsReload {
-		for filename := range s.modTimes {
-			if !currentFiles[filename] {
+		for path := range s.modTimes {
+			if _, exists := currentFiles[path]; !exists {
 				needsReload = true
 				break
 			}
@@ -128,33 +147,54 @@ func (s *Service) CheckAndReload() error {
 
 	s.hashtables = make([]*Hashtab, 0)
 	s.modTimes = make(map[string]time.Time)
+	s.pathByName = make(map[string]string)
 
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
+	loadedNames := make(map[string]string)
+
+	err = filepath.WalkDir(s.dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
 
-		path := filepath.Join(s.dir, entry.Name())
-		logging.Info(logging.ComponentHashtab, "Loading hashtable: %s", entry.Name())
+		if d.IsDir() {
+			return nil
+		}
+
+		filename := filepath.Base(path)
+
+		if existingPath, exists := loadedNames[filename]; exists {
+			logging.Warn(logging.ComponentHashtab, "Skipping duplicate hashtable file %s (already loaded from %s)", path, existingPath)
+			return nil
+		}
+
+		logging.Info(logging.ComponentHashtab, "Loading hashtable: %s", filename)
 
 		ht, err := Load(path)
 		if err != nil {
-			logging.Error(logging.ComponentHashtab, "Failed to load hashtable %s: %v", entry.Name(), err)
-			continue
+			logging.Error(logging.ComponentHashtab, "Failed to load hashtable %s: %v", filename, err)
+			return nil
 		}
 
 		formatType := "hashtab (with strings)"
 		if ht.IsHashlist() {
 			formatType = "hashlist (hash-only)"
 		}
-		logging.Info(logging.ComponentHashtab, "Loaded %s: %s, %d entries, version %s", entry.Name(), formatType, len(ht.Entries), ht.OSVersion)
+		logging.Info(logging.ComponentHashtab, "Loaded %s: %s, %d entries, version %s", filename, formatType, len(ht.Entries), ht.OSVersion)
 
 		s.hashtables = append(s.hashtables, ht)
+		loadedNames[filename] = path
+		s.pathByName[filename] = path
 
-		fileInfo, err := entry.Info()
+		fileInfo, err := d.Info()
 		if err == nil {
-			s.modTimes[entry.Name()] = fileInfo.ModTime()
+			s.modTimes[path] = fileInfo.ModTime()
 		}
+
+		return nil
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to reload hashtables: %w", err)
 	}
 
 	logging.Info(logging.ComponentHashtab, "Reload complete: %d hashtables loaded", len(s.hashtables))
