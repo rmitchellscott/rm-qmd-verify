@@ -1,19 +1,5 @@
 FROM --platform=$BUILDPLATFORM tonistiigi/xx:1.7.0 AS xx
 
-FROM --platform=$BUILDPLATFORM rust:1.83-alpine AS qmldiff-builder
-
-COPY --from=xx / /
-
-RUN apk add --no-cache git musl-dev clang lld
-
-ARG TARGETPLATFORM
-
-WORKDIR /build
-RUN git clone --depth 1 https://github.com/asivery/qmldiff.git && \
-    cd qmldiff && \
-    xx-cargo build --release && \
-    xx-verify target/*/release/qmldiff
-
 FROM --platform=$BUILDPLATFORM node:24-alpine AS frontend-builder
 
 WORKDIR /build
@@ -62,15 +48,12 @@ RUN apk add --no-cache ca-certificates tzdata
 
 WORKDIR /app
 
-COPY --from=qmldiff-builder /build/qmldiff/target/*/release/qmldiff /app/bin/qmldiff
-
 COPY --from=backend-builder /build/rm-qmd-verify /app/rm-qmd-verify
 
 RUN mkdir -p /app/hashtables
 
 ENV PORT=8080 \
-    HASHTAB_DIR=/app/hashtables \
-    QMLDIFF_BINARY=/app/bin/qmldiff
+    HASHTAB_DIR=/app/hashtables
 
 EXPOSE 8080
 
