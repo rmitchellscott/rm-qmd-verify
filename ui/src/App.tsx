@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Toaster } from '@/components/ui/sonner'
 import { toast } from 'sonner'
 import ThemeSwitcher from '@/components/ThemeSwitcher'
@@ -16,6 +17,7 @@ interface ComparisonResult {
   device: string
   compatible: boolean
   error_detail?: string
+  missing_hashes?: number[]
 }
 
 const deviceNames: Record<string, { short: string; full: string }> = {
@@ -63,17 +65,6 @@ function compareVersions(a: string, b: string): number {
     }
   }
   return 0
-}
-
-function extractMissingHash(errorDetail: string): string {
-  if (!errorDetail) return 'Unknown'
-
-  const hashMatch = errorDetail.match(/(?:Cannot resolve hash|Couldn't resolve the hashed identifier)\s+(\d+)/)
-  if (hashMatch) {
-    return hashMatch[1]
-  }
-
-  return 'Unknown'
 }
 
 function AppContent() {
@@ -274,17 +265,29 @@ function AppContent() {
                 </Tooltip>
               )}
               {result?.compatible === false && (
-                <Tooltip>
-                  <TooltipTrigger>
-                    <XCircle className="h-5 w-5 text-red-600 inline-block" />
-                  </TooltipTrigger>
-                  <TooltipContent>
+                <Popover>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <PopoverTrigger asChild>
+                        <button className="cursor-pointer border-none bg-transparent p-0">
+                          <XCircle className="h-5 w-5 text-red-600" />
+                        </button>
+                      </PopoverTrigger>
+                    </TooltipTrigger>
+                    <TooltipContent>Click for details</TooltipContent>
+                  </Tooltip>
+                  <PopoverContent>
                     <div className="text-sm">
-                      <div>Missing hash:</div>
-                      <div className="font-mono">{extractMissingHash(result.error_detail || '')}</div>
+                      <div className="mb-2">Missing {result.missing_hashes && result.missing_hashes.length > 1 ? 'hashes' : 'hash'}:</div>
+                      {result.missing_hashes && result.missing_hashes.map(hash => (
+                        <div key={hash} className="font-mono">{hash}</div>
+                      ))}
+                      {(!result.missing_hashes || result.missing_hashes.length === 0) && (
+                        <div className="font-mono">Unknown</div>
+                      )}
                     </div>
-                  </TooltipContent>
-                </Tooltip>
+                  </PopoverContent>
+                </Popover>
               )}
               {!result && (
                 <span className="text-muted-foreground">—</span>
