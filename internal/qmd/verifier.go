@@ -1,6 +1,8 @@
 package qmd
 
 import (
+	"sort"
+
 	"github.com/rmitchellscott/rm-qmd-verify/pkg/hashtab"
 )
 
@@ -30,6 +32,10 @@ func (v *Verifier) Verify(qmdContent string) (*VerifyResult, error) {
 			missingHashes = append(missingHashes, hash)
 		}
 	}
+
+	sort.Slice(missingHashes, func(i, j int) bool {
+		return missingHashes[i] < missingHashes[j]
+	})
 
 	result := &VerifyResult{
 		Compatible:    len(missingHashes) == 0,
