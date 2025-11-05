@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rmitchellscott/rm-qmd-verify/pkg/hashtab"
+	"github.com/rmitchellscott/rm-qmd-verify/internal/jobs"
 	"github.com/rmitchellscott/rm-qmd-verify/internal/logging"
 	"github.com/rmitchellscott/rm-qmd-verify/internal/qmd"
 )
@@ -56,29 +57,64 @@ func NewService(binaryPath string, hashtabService *hashtab.Service) *Service {
 
 
 func (s *Service) CompareAgainstAll(qmdContent []byte) ([]ComparisonResult, error) {
+	return s.CompareAgainstAllWithProgress(qmdContent, nil, "")
+}
+
+func (s *Service) CompareAgainstAllWithProgress(qmdContent []byte, jobStore *jobs.Store, jobID string) ([]ComparisonResult, error) {
 	hashtables := s.hashtabService.GetHashtables()
 	if len(hashtables) == 0 {
 		return nil, fmt.Errorf("no hashtables loaded")
 	}
 
+	if jobStore != nil && jobID != "" {
+		jobStore.UpdateWithOperation(jobID, "running", "Parsing QMD file", nil, "parsing")
+		jobStore.UpdateProgress(jobID, 10)
+	}
+
+	parser := qmd.NewParser(string(qmdContent))
+	hashes, err := parser.ExtractHashes()
+	if err != nil {
+		if jobStore != nil && jobID != "" {
+			jobStore.Update(jobID, "error", fmt.Sprintf("Failed to parse QMD file: %v", err), nil)
+		}
+		return nil, fmt.Errorf("failed to extract hashes: %w", err)
+	}
+
+	if jobStore != nil && jobID != "" {
+		jobStore.UpdateWithOperation(jobID, "running", "Comparing against hashtables", nil, "comparing")
+		jobStore.UpdateProgress(jobID, 20)
+	}
+
 	results := make([]ComparisonResult, len(hashtables))
 	var wg sync.WaitGroup
 	var mu sync.Mutex
+	completed := 0
 
 	for i, ht := range hashtables {
 		wg.Add(1)
 		go func(idx int, hashtable *hashtab.Hashtab) {
 			defer wg.Done()
 
-			result := s.compareAgainstHashtable(qmdContent, hashtable)
+			result := s.compareWithHashes(hashes, hashtable)
 
 			mu.Lock()
 			results[idx] = result
+			completed++
+			if jobStore != nil && jobID != "" {
+				progress := 20 + int(float64(completed)/float64(len(hashtables))*80)
+				jobStore.UpdateProgress(jobID, progress)
+			}
 			mu.Unlock()
 		}(i, ht)
 	}
 
 	wg.Wait()
+
+	if jobStore != nil && jobID != "" {
+		jobStore.UpdateProgress(jobID, 100)
+		jobStore.Update(jobID, "success", "Comparison complete", nil)
+	}
+
 	return results, nil
 }
 
@@ -96,6 +132,27 @@ func (s *Service) compareAgainstHashtable(qmdContent []byte, hashtable *hashtab.
 		return result
 	}
 
+	result.Compatible = verifyResult.Compatible
+	result.MissingHashes = verifyResult.MissingHashes
+
+	if !result.Compatible {
+		result.ErrorDetail = fmt.Sprintf("missing %d hash(es)", len(verifyResult.MissingHashes))
+		logging.Warn(logging.ComponentQMLDiff, "Comparison failed for %s: missing %d hashes", hashtable.Name, len(verifyResult.MissingHashes))
+	} else {
+		logging.Info(logging.ComponentQMLDiff, "Comparison succeeded for %s", hashtable.Name)
+	}
+
+	return result
+}
+
+func (s *Service) compareWithHashes(hashes []uint64, hashtable *hashtab.Hashtab) ComparisonResult {
+	result := ComparisonResult{
+		Hashtable: hashtable.Name,
+		OSVersion: hashtable.OSVersion,
+		Device:    hashtable.Device,
+	}
+
+	verifyResult := qmd.VerifyWithHashes(hashes, hashtable)
 	result.Compatible = verifyResult.Compatible
 	result.MissingHashes = verifyResult.MissingHashes
 

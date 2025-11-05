@@ -49,3 +49,21 @@ func VerifyAgainstHashtab(qmdContent string, ht *hashtab.Hashtab) (*VerifyResult
 	verifier := NewVerifier(ht)
 	return verifier.Verify(qmdContent)
 }
+
+func VerifyWithHashes(hashes []uint64, ht *hashtab.Hashtab) *VerifyResult {
+	var missingHashes []uint64
+	for _, hash := range hashes {
+		if _, exists := ht.Entries[hash]; !exists {
+			missingHashes = append(missingHashes, hash)
+		}
+	}
+
+	sort.Slice(missingHashes, func(i, j int) bool {
+		return missingHashes[i] < missingHashes[j]
+	})
+
+	return &VerifyResult{
+		Compatible:    len(missingHashes) == 0,
+		MissingHashes: missingHashes,
+	}
+}

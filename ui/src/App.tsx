@@ -1,77 +1,37 @@
 import { useState, useEffect } from 'react'
+import { BrowserRouter, Routes, Route, useNavigate } from 'react-router-dom'
 import { ThemeProvider } from 'next-themes'
-import { CheckCircle2, XCircle, Loader2, ChevronRight, ChevronDown, AlertCircle } from 'lucide-react'
+import { Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Progress } from '@/components/ui/progress'
 import { Toaster } from '@/components/ui/sonner'
 import { toast } from 'sonner'
 import ThemeSwitcher from '@/components/ThemeSwitcher'
 import { FileDropzone } from '@/components/FileDropzone'
+import { FileList } from '@/components/FileList'
+import { CompatibilityMatrix, type CompareResponse } from '@/components/CompatibilityMatrix'
+import { FileDetailModal } from '@/components/FileDetailModal'
+import { ComparisonResultsPage } from '@/components/ComparisonResultsPage'
+import { waitForJobWS } from '@/lib/websocket'
+import type { JobStatus } from '@/lib/websocket'
 
-interface ComparisonResult {
-  hashtable: string
-  os_version: string
-  device: string
-  compatible: boolean
-  error_detail?: string
-  missing_hashes?: string[]
+const CONCURRENCY = 3
+
+interface FileStatus {
+  status: 'pending' | 'uploading' | 'processing' | 'success' | 'error';
+  progress: number;
+  message?: string;
 }
 
-const deviceNames: Record<string, { short: string; full: string }> = {
-  'rm1': { short: 'rM1', full: 'reMarkable 1' },
-  'rm2': { short: 'rM2', full: 'reMarkable 2' },
-  'rmpp': { short: 'rMPP', full: 'Paper Pro' },
-  'rmppm': { short: 'rMPPM', full: 'Paper Pro Move' },
-}
-
-interface CompareResponse {
-  compatible: ComparisonResult[]
-  incompatible: ComparisonResult[]
-  total_checked: number
-}
-
-interface VersionInfo {
-  full: string
-  majorMinorPatch: string
-  build: string | null
-  parts: number[]
-}
-
-function parseVersion(version: string): VersionInfo {
-  const parts = version.split('.').map(p => parseInt(p, 10))
-  const build = parts.length > 3 ? parts[3].toString() : null
-  const majorMinorPatch = parts.slice(0, 3).join('.')
-
-  return {
-    full: version,
-    majorMinorPatch,
-    build,
-    parts
-  }
-}
-
-function compareVersions(a: string, b: string): number {
-  const aParts = parseVersion(a).parts
-  const bParts = parseVersion(b).parts
-
-  for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
-    const aVal = aParts[i] || 0
-    const bVal = bParts[i] || 0
-    if (aVal !== bVal) {
-      return bVal - aVal
-    }
-  }
-  return 0
-}
-
-function AppContent() {
-  const [file, setFile] = useState<File | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [results, setResults] = useState<CompareResponse | null>(null)
-  const [expandedVersions, setExpandedVersions] = useState<Set<string>>(new Set())
+function HomePage() {
+  const navigate = useNavigate()
+  const [files, setFiles] = useState<File[]>([])
+  const [fileStatuses, setFileStatuses] = useState<Map<string, FileStatus>>(new Map())
+  const [fileResults, setFileResults] = useState<Map<string, CompareResponse>>(new Map())
+  const [selectedFileForModal, setSelectedFileForModal] = useState<string | null>(null)
+  const [isProcessing, setIsProcessing] = useState(false)
+  const [shouldNavigateToResults, setShouldNavigateToResults] = useState(false)
   const [versionInfo, setVersionInfo] = useState<{ version: string } | null>(null)
 
   useEffect(() => {
@@ -86,339 +46,295 @@ function AppContent() {
         console.error('Failed to fetch version info:', error)
       }
     }
+
+    const refreshHashtables = async () => {
+      try {
+        // Trigger hashtable check/reload on page load
+        await fetch('/api/hashtables')
+      } catch (error) {
+        console.error('Failed to refresh hashtables:', error)
+      }
+    }
+
     fetchVersionInfo()
+    refreshHashtables()
   }, [])
 
-  const handleFileSelected = (selectedFile: File) => {
-    setFile(selectedFile)
+  useEffect(() => {
+    const allFilesProcessed = files.length > 0 && files.every(f => {
+      const status = fileStatuses.get(f.name)
+      return status && (status.status === 'success' || status.status === 'error')
+    })
+
+    if (shouldNavigateToResults && !isProcessing && allFilesProcessed && files.length > 1) {
+      navigate('/results', {
+        state: {
+          results: Object.fromEntries(fileResults),
+          filenames: files.map(f => f.name)
+        }
+      })
+      setShouldNavigateToResults(false)
+    }
+  }, [shouldNavigateToResults, isProcessing, fileStatuses, fileResults, files, navigate])
+
+  const handleFilesSelected = (selectedFiles: File[]) => {
+    setFiles(selectedFiles)
+    const newStatuses = new Map<string, FileStatus>()
+    selectedFiles.forEach(file => {
+      newStatuses.set(file.name, {
+        status: 'pending',
+        progress: 0
+      })
+    })
+    setFileStatuses(newStatuses)
+    setFileResults(new Map())
   }
 
   const handleError = (message: string) => {
-    toast.error("Invalid file type", {
+    toast.error("Error", {
       description: message,
     })
   }
 
-  const handleUpload = async () => {
-    if (!file) {
-      return
-    }
+  const updateFileStatus = (filename: string, updates: Partial<FileStatus>) => {
+    setFileStatuses(prev => {
+      const newMap = new Map(prev)
+      const existing = newMap.get(filename)
+      if (existing) {
+        newMap.set(filename, { ...existing, ...updates })
+      }
+      return newMap
+    })
+  }
 
-    setLoading(true)
-    setResults(null)
+  const uploadFileWithProgress = async (
+    file: File,
+    onProgress: (percent: number) => void
+  ): Promise<{ jobId: string }> => {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
 
-    try {
+      xhr.upload.addEventListener('progress', (event) => {
+        if (event.lengthComputable) {
+          const percentComplete = (event.loaded / event.total) * 100
+          onProgress(percentComplete)
+        }
+      })
+
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const response = JSON.parse(xhr.responseText)
+            resolve(response)
+          } catch (err) {
+            reject(new Error('Invalid response format'))
+          }
+        } else {
+          reject(new Error(xhr.responseText || `HTTP ${xhr.status}`))
+        }
+      })
+
+      xhr.addEventListener('error', () => {
+        reject(new Error('Upload failed'))
+      })
+
       const formData = new FormData()
       formData.append('file', file)
 
-      const response = await fetch('/api/compare', {
-        method: 'POST',
-        body: formData,
+      xhr.open('POST', '/api/compare')
+      xhr.send(formData)
+    })
+  }
+
+  const processFile = async (file: File, localResults?: Map<string, CompareResponse>) => {
+    try {
+      updateFileStatus(file.name, { status: 'uploading', progress: 0 })
+
+      const { jobId } = await uploadFileWithProgress(file, (progress) => {
+        updateFileStatus(file.name, { progress, message: 'Uploading...' })
       })
 
-      if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.error || 'Upload failed')
+      updateFileStatus(file.name, {
+        status: 'processing',
+        progress: 0,
+        message: 'Processing...'
+      })
+
+      await waitForJobWS(jobId, (status: JobStatus) => {
+        updateFileStatus(file.name, {
+          progress: status.progress,
+          message: status.message
+        })
+      })
+
+      const resultsResponse = await fetch(`/api/results/${jobId}`)
+      if (!resultsResponse.ok) {
+        throw new Error('Failed to fetch results')
       }
 
-      const data: CompareResponse = await response.json()
-      setResults(data)
-    } catch (error) {
-      toast.error("Upload failed", {
-        description: error instanceof Error ? error.message : "An error occurred",
+      const results: CompareResponse = await resultsResponse.json()
+      setFileResults(prev => new Map(prev).set(file.name, results))
+
+      if (localResults) {
+        localResults.set(file.name, results)
+      }
+
+      updateFileStatus(file.name, {
+        status: 'success',
+        progress: 100,
+        message: 'Complete'
       })
-    } finally {
-      setLoading(false)
+    } catch (error) {
+      updateFileStatus(file.name, {
+        status: 'error',
+        message: error instanceof Error ? error.message : 'An error occurred'
+      })
+      toast.error("Processing failed", {
+        description: `${file.name}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      })
+    }
+  }
+
+  const handleUploadAll = async () => {
+    if (files.length === 0) return
+
+    setIsProcessing(true)
+    setShouldNavigateToResults(false)
+
+    const localResults = new Map<string, CompareResponse>()
+    const queue = [...files]
+
+    while (queue.length > 0) {
+      const batch = queue.splice(0, CONCURRENCY)
+      await Promise.all(batch.map(file => processFile(file, localResults)))
+    }
+
+    setIsProcessing(false)
+
+    if (files.length > 1) {
+      setShouldNavigateToResults(true)
     }
   }
 
   const handleReset = () => {
-    setFile(null)
-    setResults(null)
+    setFiles([])
+    setFileStatuses(new Map())
+    setFileResults(new Map())
+    setSelectedFileForModal(null)
   }
 
-  const toggleVersionExpansion = (majorMinorPatch: string) => {
-    setExpandedVersions(prev => {
-      const next = new Set(prev)
-      if (next.has(majorMinorPatch)) {
-        next.delete(majorMinorPatch)
-      } else {
-        next.add(majorMinorPatch)
-      }
-      return next
+  const handleRemoveFile = (index: number) => {
+    const newFiles = files.filter((_, i) => i !== index)
+    const removedFileName = files[index].name
+
+    setFiles(newFiles)
+    setFileStatuses(prev => {
+      const newMap = new Map(prev)
+      newMap.delete(removedFileName)
+      return newMap
+    })
+    setFileResults(prev => {
+      const newMap = new Map(prev)
+      newMap.delete(removedFileName)
+      return newMap
     })
   }
 
-  const buildCompatibilityMatrix = () => {
-    if (!results) return { versionGroups: [], deviceKeys: [], matrix: {} }
+  const hasResults = fileResults.size > 0
+  const allFilesProcessed = files.length > 0 && files.every(f => {
+    const status = fileStatuses.get(f.name)
+    return status && (status.status === 'success' || status.status === 'error')
+  })
 
-    const allResults = [...results.compatible, ...results.incompatible]
-    const deviceKeys = ['rm1', 'rm2', 'rmpp', 'rmppm']
-
-    const matrix: Record<string, Record<string, ComparisonResult | null>> = {}
-    allResults.forEach(result => {
-      if (!matrix[result.os_version]) {
-        matrix[result.os_version] = {}
-      }
-      matrix[result.os_version][result.device] = result
-    })
-
-    const versionsByGroup = new Map<string, string[]>()
-    allResults.forEach(result => {
-      const versionInfo = parseVersion(result.os_version)
-      const group = versionInfo.majorMinorPatch
-      if (!versionsByGroup.has(group)) {
-        versionsByGroup.set(group, [])
-      }
-      const versions = versionsByGroup.get(group)!
-      if (!versions.includes(result.os_version)) {
-        versions.push(result.os_version)
-      }
-    })
-
-    versionsByGroup.forEach((versions, _group) => {
-      versions.sort(compareVersions)
-    })
-
-    const sortedGroups = Array.from(versionsByGroup.keys()).sort((a, b) => {
-      const aMaxVersion = versionsByGroup.get(a)![0]
-      const bMaxVersion = versionsByGroup.get(b)![0]
-      return compareVersions(aMaxVersion, bMaxVersion)
-    })
-
-    const versionGroups = sortedGroups.map(group => ({
-      majorMinorPatch: group,
-      versions: versionsByGroup.get(group)!,
-      hasMultipleBuilds: versionsByGroup.get(group)!.length > 1
-    }))
-
-    return { versionGroups, deviceKeys, matrix }
-  }
+  const completedFiles = Array.from(fileStatuses.values())
+    .filter(s => s.status === 'success' || s.status === 'error').length
+  const overallProgress = files.length > 0 ? (completedFiles / files.length) * 100 : 0
 
   return (
-    <>
+    <div className="min-h-screen flex flex-col">
       <header className="flex items-center justify-between px-8 py-2 bg-background">
         <h1 className="text-2xl font-bold">reMarkable QMD Verifier</h1>
         <ThemeSwitcher />
       </header>
-      <main className="bg-background pt-0 pb-8 px-8">
+      <main className="flex-1 bg-background pt-0 pb-8 px-8">
         <div className="max-w-md mx-auto space-y-6">
           <Card className="bg-card">
-          <CardHeader>
-            <CardTitle>Verify QMD File</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
+            <CardHeader>
+              <CardTitle>Verify QMD Files</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
               <FileDropzone
-                onFileSelected={handleFileSelected}
-                onFilesSelected={() => {}}
-                disabled={loading}
+                onFileSelected={(file) => handleFilesSelected([file])}
+                onFilesSelected={handleFilesSelected}
+                disabled={isProcessing}
                 onError={handleError}
-                multiple={false}
+                multiple={true}
               />
-              {file && (
-                <div className="mt-4 p-3 bg-muted rounded-md">
-                  <p className="text-sm font-medium">{file.name}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {(file.size / 1024).toFixed(2)} KB
-                  </p>
-                </div>
-              )}
-            </div>
 
-            <div className="flex gap-2">
-              <Button variant="outline" onClick={handleReset} className="flex-1" disabled={!file && !results}>
-                Reset
-              </Button>
-              <Button
-                onClick={handleUpload}
-                disabled={!file || loading}
-                className="flex-1"
-              >
-                {loading ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Comparing...
-                  </>
-                ) : (
-                  'Compare'
-                )}
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+              {files.length > 0 && (
+                <FileList
+                  files={files}
+                  onRemove={handleRemoveFile}
+                  disabled={isProcessing}
+                />
+              )}
+
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  onClick={handleReset}
+                  className="flex-1"
+                  disabled={files.length === 0 || isProcessing}
+                >
+                  Reset
+                </Button>
+                <Button
+                  onClick={handleUploadAll}
+                  disabled={files.length === 0 || isProcessing}
+                  className="flex-1"
+                >
+                  {isProcessing ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Processing...
+                    </>
+                  ) : (
+                    'Compare'
+                  )}
+                </Button>
+              </div>
+
+              {isProcessing && files.length > 0 && overallProgress > 0 && overallProgress < 100 && (
+                <Progress value={overallProgress} />
+              )}
+            </CardContent>
+          </Card>
         </div>
 
-        {results && (() => {
-          const { versionGroups, deviceKeys, matrix } = buildCompatibilityMatrix()
+        {hasResults && allFilesProcessed && files.length === 1 && fileResults.has(files[0].name) && (
+          <div className="max-w-4xl mx-auto mt-6">
+            <Card className="bg-card">
+              <CardHeader>
+                <CardTitle>Compatibility Results</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <CompatibilityMatrix
+                  results={fileResults.get(files[0].name)!}
+                />
+              </CardContent>
+            </Card>
+          </div>
+        )}
 
-          const renderCompatibilityCell = (result: ComparisonResult | null | undefined, device: string) => (
-            <TableCell key={device} className="text-center">
-              {result?.compatible === true && (
-                <Tooltip>
-                  <TooltipTrigger>
-                    <CheckCircle2 className="h-5 w-5 text-green-600 inline-block" />
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    Compatible
-                  </TooltipContent>
-                </Tooltip>
-              )}
-              {result?.compatible === false && (
-                <Popover>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <PopoverTrigger asChild>
-                        <button className="cursor-pointer border-none bg-transparent p-0">
-                          <XCircle className="h-5 w-5 text-red-600" />
-                        </button>
-                      </PopoverTrigger>
-                    </TooltipTrigger>
-                    <TooltipContent>Click for details</TooltipContent>
-                  </Tooltip>
-                  <PopoverContent>
-                    <div className="text-sm">
-                      <div className="mb-2">Missing {result.missing_hashes && result.missing_hashes.length > 1 ? 'hashes' : 'hash'}:</div>
-                      {result.missing_hashes && result.missing_hashes.map(hash => (
-                        <div key={hash} className="font-mono">{hash}</div>
-                      ))}
-                      {(!result.missing_hashes || result.missing_hashes.length === 0) && (
-                        <div className="font-mono">Unknown</div>
-                      )}
-                    </div>
-                  </PopoverContent>
-                </Popover>
-              )}
-              {!result && (
-                <span className="text-muted-foreground">—</span>
-              )}
-            </TableCell>
-          )
-
-          return (
-            <div className="max-w-4xl mx-auto mt-6">
-              <Card className="bg-card">
-                <CardHeader>
-                  <CardTitle>Compatibility Results</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <TooltipProvider>
-                    <Table>
-                      <TableHeader>
-                      <TableRow>
-                        <TableHead className="min-w-24 sm:min-w-32"></TableHead>
-                        {deviceKeys.map(device => (
-                          <TableHead key={device} className="text-center">
-                            <span className="sm:hidden">{deviceNames[device].short}</span>
-                            <span className="hidden sm:inline">{deviceNames[device].full}</span>
-                          </TableHead>
-                        ))}
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {versionGroups.map(group => {
-                        const isExpanded = expandedVersions.has(group.majorMinorPatch)
-
-                        if (group.hasMultipleBuilds) {
-                          return (
-                            <>
-                              <TableRow key={group.majorMinorPatch} className="cursor-pointer hover:bg-muted/50">
-                                <TableCell
-                                  className="font-medium"
-                                  onClick={() => toggleVersionExpansion(group.majorMinorPatch)}
-                                >
-                                  <div className="flex items-center gap-2">
-                                    <span>{group.majorMinorPatch}</span>
-                                    {isExpanded ? (
-                                      <ChevronDown className="h-4 w-4" />
-                                    ) : (
-                                      <ChevronRight className="h-4 w-4" />
-                                    )}
-                                  </div>
-                                </TableCell>
-                                {isExpanded ? (
-                                  deviceKeys.map(device => (
-                                    <TableCell key={device} className="text-center"></TableCell>
-                                  ))
-                                ) : (
-                                  deviceKeys.map(device => {
-                                    const allResults = group.versions.map(v => matrix[v]?.[device]).filter(Boolean)
-
-                                    if (allResults.length === 0) {
-                                      return <TableCell key={device} className="text-center">
-                                        <span className="text-muted-foreground">—</span>
-                                      </TableCell>
-                                    }
-
-                                    const hasFailure = allResults.some(r => r?.compatible === false)
-                                    const hasSuccess = allResults.some(r => r?.compatible === true)
-
-                                    if (hasFailure && hasSuccess) {
-                                      return (
-                                        <TableCell key={device} className="text-center">
-                                          <Tooltip>
-                                            <TooltipTrigger asChild>
-                                              <button
-                                                className="cursor-pointer border-none bg-transparent p-0"
-                                                onClick={() => toggleVersionExpansion(group.majorMinorPatch)}
-                                              >
-                                                <AlertCircle className="h-5 w-5 text-yellow-600 inline-block" />
-                                              </button>
-                                            </TooltipTrigger>
-                                            <TooltipContent>
-                                              Mixed results - click to see details
-                                            </TooltipContent>
-                                          </Tooltip>
-                                        </TableCell>
-                                      )
-                                    } else if (hasFailure) {
-                                      const failureResult = allResults.find(r => r?.compatible === false)
-                                      return renderCompatibilityCell(failureResult!, device)
-                                    } else {
-                                      const successResult = allResults.find(r => r?.compatible === true)
-                                      return renderCompatibilityCell(successResult!, device)
-                                    }
-                                  })
-                                )}
-                              </TableRow>
-                              {isExpanded && group.versions.map(version => (
-                                <TableRow key={version} className="bg-muted/20">
-                                  <TableCell className="font-medium pl-10">
-                                    {version}
-                                  </TableCell>
-                                  {deviceKeys.map(device => {
-                                    const result = matrix[version]?.[device]
-                                    return renderCompatibilityCell(result, device)
-                                  })}
-                                </TableRow>
-                              ))}
-                            </>
-                          )
-                        } else {
-                          const version = group.versions[0]
-                          return (
-                            <TableRow key={version}>
-                              <TableCell className="font-medium">{version}</TableCell>
-                              {deviceKeys.map(device => {
-                                const result = matrix[version]?.[device]
-                                return renderCompatibilityCell(result, device)
-                              })}
-                            </TableRow>
-                          )
-                        }
-                      })}
-                    </TableBody>
-                    </Table>
-                  </TooltipProvider>
-                </CardContent>
-              </Card>
-            </div>
-          )
-        })()}
+        <FileDetailModal
+          filename={selectedFileForModal}
+          results={selectedFileForModal ? fileResults.get(selectedFileForModal) : undefined}
+          open={!!selectedFileForModal}
+          onOpenChange={(open) => !open && setSelectedFileForModal(null)}
+        />
       </main>
-      <Toaster />
       {versionInfo && (
-        <footer className="fixed bottom-0 left-0 right-0 py-2 bg-background">
+        <footer className="py-2 bg-background">
           <div className="text-center text-sm text-muted-foreground">
             <span>{versionInfo.version} • </span>
             <a
@@ -432,14 +348,20 @@ function AppContent() {
           </div>
         </footer>
       )}
-    </>
+      <Toaster />
+    </div>
   )
 }
 
 export default function App() {
   return (
     <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
-      <AppContent />
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/results" element={<ComparisonResultsPage />} />
+        </Routes>
+      </BrowserRouter>
     </ThemeProvider>
   )
 }
