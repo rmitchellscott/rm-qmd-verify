@@ -7,7 +7,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./hashtables:/app/hashtables:ro
+      - ./hashtables:/app/hashtables
     environment:
       - PORT=8080
       - HASHTAB_DIR=/app/hashtables

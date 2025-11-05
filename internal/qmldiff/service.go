@@ -1,10 +1,12 @@
 package qmldiff
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 
 	"github.com/google/uuid"
@@ -19,7 +21,27 @@ type ComparisonResult struct {
 	Device        string   `json:"device"`
 	Compatible    bool     `json:"compatible"`
 	ErrorDetail   string   `json:"error_detail,omitempty"`
-	MissingHashes []uint64 `json:"missing_hashes,omitempty"`
+	MissingHashes []uint64 `json:"-"`
+}
+
+func (cr ComparisonResult) MarshalJSON() ([]byte, error) {
+	type Alias ComparisonResult
+
+	var missingHashesStr []string
+	if len(cr.MissingHashes) > 0 {
+		missingHashesStr = make([]string, len(cr.MissingHashes))
+		for i, hash := range cr.MissingHashes {
+			missingHashesStr[i] = strconv.FormatUint(hash, 10)
+		}
+	}
+
+	return json.Marshal(&struct {
+		*Alias
+		MissingHashes []string `json:"missing_hashes,omitempty"`
+	}{
+		Alias:         (*Alias)(&cr),
+		MissingHashes: missingHashesStr,
+	})
 }
 
 type Service struct {

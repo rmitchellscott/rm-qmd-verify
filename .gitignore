@@ -37,7 +37,6 @@ ui/dist/
 
 # Data
 /data/
-/hashtables/
 *.db
 *.sqlite
 
