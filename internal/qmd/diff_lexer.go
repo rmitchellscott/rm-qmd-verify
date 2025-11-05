@@ -34,6 +34,8 @@ type DiffToken struct {
 	Value       string
 	HashedValue *HashedValue
 	QMLCode     []*QMLToken
+	Line        int
+	Column      int
 }
 
 type DiffLexer struct {
@@ -47,9 +49,12 @@ func NewDiffLexer(input string) *DiffLexer {
 }
 
 func (l *DiffLexer) NextToken() (*DiffToken, error) {
+	line := l.stream.Line
+	column := l.stream.Column
+
 	r, ok := l.stream.Peek()
 	if !ok {
-		return &DiffToken{Type: DiffEndOfStream}, nil
+		return &DiffToken{Type: DiffEndOfStream, Line: line, Column: column}, nil
 	}
 
 	switch r {
@@ -59,26 +64,26 @@ func (l *DiffLexer) NextToken() (*DiffToken, error) {
 			return l.lexHashedValue()
 		}
 		l.stream.Advance()
-		return &DiffToken{Type: DiffSymbol, Value: string(r)}, nil
+		return &DiffToken{Type: DiffSymbol, Value: string(r), Line: line, Column: column}, nil
 
 	case '{':
 		return l.lexBracedQMLBlock()
 
 	case '\n':
 		l.stream.Advance()
-		return &DiffToken{Type: DiffNewLine, Value: "\n"}, nil
+		return &DiffToken{Type: DiffNewLine, Value: "\n", Line: line, Column: column}, nil
 
 	case ' ', '\t', '\r':
 		ws := l.stream.CollectWhile(func(r rune) bool {
 			return r == ' ' || r == '\t' || r == '\r'
 		})
-		return &DiffToken{Type: DiffWhitespace, Value: ws}, nil
+		return &DiffToken{Type: DiffWhitespace, Value: ws, Line: line, Column: column}, nil
 
 	case ';':
 		comment := l.stream.CollectWhile(func(r rune) bool {
 			return r != '\n'
 		})
-		return &DiffToken{Type: DiffComment, Value: comment}, nil
+		return &DiffToken{Type: DiffComment, Value: comment, Line: line, Column: column}, nil
 
 	case '\'', '"', '`':
 		return l.lexString()
@@ -88,11 +93,14 @@ func (l *DiffLexer) NextToken() (*DiffToken, error) {
 			return l.lexIdentifierOrKeyword()
 		}
 		l.stream.Advance()
-		return &DiffToken{Type: DiffSymbol, Value: string(r)}, nil
+		return &DiffToken{Type: DiffSymbol, Value: string(r), Line: line, Column: column}, nil
 	}
 }
 
 func (l *DiffLexer) lexHashedValue() (*DiffToken, error) {
+	line := l.stream.Line
+	column := l.stream.Column
+
 	l.stream.Advance()
 	l.stream.Advance()
 
@@ -145,10 +153,15 @@ func (l *DiffLexer) lexHashedValue() (*DiffToken, error) {
 	return &DiffToken{
 		Type:        DiffHashedValue,
 		HashedValue: hv,
+		Line:        line,
+		Column:      column,
 	}, nil
 }
 
 func (l *DiffLexer) lexBracedQMLBlock() (*DiffToken, error) {
+	line := l.stream.Line
+	column := l.stream.Column
+
 	l.stream.Advance()
 
 	qmlStart := l.stream.Position
@@ -185,10 +198,15 @@ func (l *DiffLexer) lexBracedQMLBlock() (*DiffToken, error) {
 	return &DiffToken{
 		Type:    DiffQMLCode,
 		QMLCode: qmlTokens,
+		Line:    line,
+		Column:  column,
 	}, nil
 }
 
 func (l *DiffLexer) lexString() (*DiffToken, error) {
+	line := l.stream.Line
+	column := l.stream.Column
+
 	quoteChar, _ := l.stream.Advance()
 	str := string(quoteChar)
 
@@ -219,10 +237,13 @@ func (l *DiffLexer) lexString() (*DiffToken, error) {
 		l.stream.Advance()
 	}
 
-	return &DiffToken{Type: DiffString, Value: str}, nil
+	return &DiffToken{Type: DiffString, Value: str, Line: line, Column: column}, nil
 }
 
 func (l *DiffLexer) lexIdentifierOrKeyword() (*DiffToken, error) {
+	line := l.stream.Line
+	column := l.stream.Column
+
 	ident := l.stream.CollectWhile(func(r rune) bool {
 		return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
 	})
@@ -235,10 +256,13 @@ func (l *DiffLexer) lexIdentifierOrKeyword() (*DiffToken, error) {
 		return l.lexStreamQMLBlock()
 	}
 
-	return &DiffToken{Type: DiffIdentifier, Value: ident}, nil
+	return &DiffToken{Type: DiffIdentifier, Value: ident, Line: line, Column: column}, nil
 }
 
 func (l *DiffLexer) lexStreamQMLBlock() (*DiffToken, error) {
+	line := l.stream.Line
+	column := l.stream.Column
+
 	qmlStart := l.stream.Position
 
 	initialChar, ok := l.stream.Peek()
@@ -268,6 +292,8 @@ func (l *DiffLexer) lexStreamQMLBlock() (*DiffToken, error) {
 			return &DiffToken{
 				Type:    DiffQMLCode,
 				QMLCode: qmlTokens,
+				Line:    line,
+				Column:  column,
 			}, nil
 		}
 

@@ -7,12 +7,16 @@ import (
 type StringCharacterTokenizer struct {
 	Input    string
 	Position int
+	Line     int
+	Column   int
 }
 
 func NewTokenizer(input string) *StringCharacterTokenizer {
 	return &StringCharacterTokenizer{
 		Input:    input,
 		Position: 0,
+		Line:     1,
+		Column:   1,
 	}
 }
 
@@ -55,6 +59,14 @@ func (t *StringCharacterTokenizer) Advance() (rune, bool) {
 	}
 	_, size := utf8.DecodeRuneInString(t.Input[t.Position:])
 	t.Position += size
+
+	if r == '\n' {
+		t.Line++
+		t.Column = 1
+	} else {
+		t.Column++
+	}
+
 	return r, true
 }
 

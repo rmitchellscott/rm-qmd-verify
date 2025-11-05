@@ -8,7 +8,7 @@ import (
 
 type VerifyResult struct {
 	Compatible    bool
-	MissingHashes []uint64
+	MissingHashes []HashWithPosition
 }
 
 type Verifier struct {
@@ -26,15 +26,18 @@ func (v *Verifier) Verify(qmdContent string) (*VerifyResult, error) {
 		return nil, err
 	}
 
-	var missingHashes []uint64
-	for _, hash := range hashes {
-		if _, exists := v.hashtab.Entries[hash]; !exists {
-			missingHashes = append(missingHashes, hash)
+	var missingHashes []HashWithPosition
+	for _, hashPos := range hashes {
+		if _, exists := v.hashtab.Entries[hashPos.Hash]; !exists {
+			missingHashes = append(missingHashes, hashPos)
 		}
 	}
 
 	sort.Slice(missingHashes, func(i, j int) bool {
-		return missingHashes[i] < missingHashes[j]
+		if missingHashes[i].Line != missingHashes[j].Line {
+			return missingHashes[i].Line < missingHashes[j].Line
+		}
+		return missingHashes[i].Column < missingHashes[j].Column
 	})
 
 	result := &VerifyResult{
@@ -50,16 +53,19 @@ func VerifyAgainstHashtab(qmdContent string, ht *hashtab.Hashtab) (*VerifyResult
 	return verifier.Verify(qmdContent)
 }
 
-func VerifyWithHashes(hashes []uint64, ht *hashtab.Hashtab) *VerifyResult {
-	var missingHashes []uint64
-	for _, hash := range hashes {
-		if _, exists := ht.Entries[hash]; !exists {
-			missingHashes = append(missingHashes, hash)
+func VerifyWithHashes(hashes []HashWithPosition, ht *hashtab.Hashtab) *VerifyResult {
+	var missingHashes []HashWithPosition
+	for _, hashPos := range hashes {
+		if _, exists := ht.Entries[hashPos.Hash]; !exists {
+			missingHashes = append(missingHashes, hashPos)
 		}
 	}
 
 	sort.Slice(missingHashes, func(i, j int) bool {
-		return missingHashes[i] < missingHashes[j]
+		if missingHashes[i].Line != missingHashes[j].Line {
+			return missingHashes[i].Line < missingHashes[j].Line
+		}
+		return missingHashes[i].Column < missingHashes[j].Column
 	})
 
 	return &VerifyResult{

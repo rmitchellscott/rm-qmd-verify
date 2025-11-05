@@ -16,32 +16,42 @@ import (
 	"github.com/rmitchellscott/rm-qmd-verify/internal/qmd"
 )
 
+type MissingHashInfo struct {
+	Hash   string `json:"hash"`
+	Line   int    `json:"line"`
+	Column int    `json:"column"`
+}
+
 type ComparisonResult struct {
-	Hashtable     string   `json:"hashtable"`
-	OSVersion     string   `json:"os_version"`
-	Device        string   `json:"device"`
-	Compatible    bool     `json:"compatible"`
-	ErrorDetail   string   `json:"error_detail,omitempty"`
-	MissingHashes []uint64 `json:"-"`
+	Hashtable     string                `json:"hashtable"`
+	OSVersion     string                `json:"os_version"`
+	Device        string                `json:"device"`
+	Compatible    bool                  `json:"compatible"`
+	ErrorDetail   string                `json:"error_detail,omitempty"`
+	MissingHashes []qmd.HashWithPosition `json:"-"`
 }
 
 func (cr ComparisonResult) MarshalJSON() ([]byte, error) {
 	type Alias ComparisonResult
 
-	var missingHashesStr []string
+	var missingHashesInfo []MissingHashInfo
 	if len(cr.MissingHashes) > 0 {
-		missingHashesStr = make([]string, len(cr.MissingHashes))
-		for i, hash := range cr.MissingHashes {
-			missingHashesStr[i] = strconv.FormatUint(hash, 10)
+		missingHashesInfo = make([]MissingHashInfo, len(cr.MissingHashes))
+		for i, hashPos := range cr.MissingHashes {
+			missingHashesInfo[i] = MissingHashInfo{
+				Hash:   strconv.FormatUint(hashPos.Hash, 10),
+				Line:   hashPos.Line,
+				Column: hashPos.Column,
+			}
 		}
 	}
 
 	return json.Marshal(&struct {
 		*Alias
-		MissingHashes []string `json:"missing_hashes,omitempty"`
+		MissingHashes []MissingHashInfo `json:"missing_hashes,omitempty"`
 	}{
 		Alias:         (*Alias)(&cr),
-		MissingHashes: missingHashesStr,
+		MissingHashes: missingHashesInfo,
 	})
 }
 
@@ -145,7 +155,7 @@ func (s *Service) compareAgainstHashtable(qmdContent []byte, hashtable *hashtab.
 	return result
 }
 
-func (s *Service) compareWithHashes(hashes []uint64, hashtable *hashtab.Hashtab) ComparisonResult {
+func (s *Service) compareWithHashes(hashes []qmd.HashWithPosition, hashtable *hashtab.Hashtab) ComparisonResult {
 	result := ComparisonResult{
 		Hashtable: hashtable.Name,
 		OSVersion: hashtable.OSVersion,
