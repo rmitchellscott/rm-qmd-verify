@@ -9,10 +9,14 @@
 node_modules
 vendor
 
+# Frontend build artifacts
+ui/dist
+
 # Build artifacts
 dist
-ui/dist
-bin
+bin/
+qmdverify
+rm-qmd-verify
 
 # Environment
 .env
@@ -22,6 +26,16 @@ bin
 # Documentation
 README.md
 *.md
+LICENSE
+cliff.toml
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose.yaml
+docker-compose.yml
+docker-compose.dev.yaml
+docker-compose.*.yaml
 
 # OS
 .DS_Store
@@ -31,9 +45,15 @@ Thumbs.db
 .vscode
 .idea
 *.swp
+*.swo
+*~
+
+# Claude
+.claude
 
 # Data
 data/
+hashtables/
 *.db
 
 # Logs

@@ -17,7 +17,7 @@ interface ComparisonResult {
   device: string
   compatible: boolean
   error_detail?: string
-  missing_hashes?: number[]
+  missing_hashes?: string[]
 }
 
 const deviceNames: Record<string, { short: string; full: string }> = {

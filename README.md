@@ -14,19 +14,36 @@ Web application and API for verifying QMD (QML Diff) files against multiple hash
 ### Docker Deployment
 
 ```bash
-# Clone the repository
+# Clone the repository (includes hashtables)
 git clone https://github.com/rmitchellscott/rm-qmd-verify.git
 cd rm-qmd-verify
-
-# Add hashtable files to hashtables/ directory
-# Format: {os_version}-{device} (e.g., 3.22.0.64-rmpp)
-cp /path/to/your/hashtables/* ./hashtables/
 
 # Run
 docker-compose up -d
 ```
 
 Access the application at http://localhost:8080
+
+**Note:** Docker builds exclude hashtables by design. Mount the hashtables directory when running containers.
+
+### CLI Commands
+
+```bash
+# Start the web server (default command)
+./qmdverify
+./qmdverify serve
+
+# Sync hashtables from GitHub
+./qmdverify sync
+./qmdverify sync --dir ./custom-dir
+./qmdverify sync --branch main --repo owner/repo
+
+# Show version
+./qmdverify --version
+
+# Show help
+./qmdverify --help
+```
 
 ### Configuration
 
@@ -123,6 +140,43 @@ List all loaded hashtables.
 ```
 
 ## Hashtables
+
+Hashtables are device and OS-specific reference files used to verify QMD file compatibility. They are organized in device-specific directories:
+
+```
+hashtables/
+├── rm1/
+├── rm2/
+├── rmpp/
+└── rmppm/
+```
+
+### Getting Hashtables
+
+Hashtables are stored in this repository and can be obtained in several ways:
+
+**1. Clone the repository** (hashtables included):
+```bash
+git clone https://github.com/rmitchellscott/rm-qmd-verify.git
+cd rm-qmd-verify
+# Hashtables are already in hashtables/
+```
+
+**2. Sync via Docker/Docker Compose** (downloads latest from repository):
+```bash
+# Using docker-compose
+docker-compose exec qmd-check /app/rm-qmd-verify sync --dir /app/hashtables
+
+# Using docker directly
+docker exec rm-qmd-verify /app/rm-qmd-verify sync --dir /app/hashtables
+
+# Sync from different branch
+docker-compose exec qmd-check /app/rm-qmd-verify sync --branch develop
+```
+
+**3. Manual download** from [GitHub](https://github.com/rmitchellscott/rm-qmd-verify/tree/main/hashtables)
+
+### File Format
 
 Name hashtable files using the format: `{os_version}-{device}`
 
