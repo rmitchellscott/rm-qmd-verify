@@ -1,6 +1,5 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { CompatibilityMatrix, type CompareResponse } from './CompatibilityMatrix';
-import { Card, CardContent } from '@/components/ui/card';
 
 interface FileDetailModalProps {
   filename: string | null;
@@ -21,11 +20,7 @@ export function FileDetailModal({ filename, results, open, onOpenChange }: FileD
         <DialogHeader>
           <DialogTitle className="truncate">{filename}</DialogTitle>
         </DialogHeader>
-        <Card>
-          <CardContent className="pt-6">
-            <CompatibilityMatrix results={results} />
-          </CardContent>
-        </Card>
+        <CompatibilityMatrix results={results} />
       </DialogContent>
     </Dialog>
   );

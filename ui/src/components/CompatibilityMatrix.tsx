@@ -140,7 +140,10 @@ export function CompatibilityMatrix({ results }: CompatibilityMatrixProps) {
           <Tooltip>
             <TooltipTrigger asChild>
               <PopoverTrigger asChild>
-                <button className="cursor-pointer border-none bg-transparent p-0">
+                <button
+                  className="cursor-pointer border-none bg-transparent p-0"
+                  onClick={(e) => e.stopPropagation()}
+                >
                   <XCircle className="h-5 w-5 text-red-600" />
                 </button>
               </PopoverTrigger>
@@ -185,11 +188,12 @@ export function CompatibilityMatrix({ results }: CompatibilityMatrixProps) {
             if (group.hasMultipleBuilds) {
               return (
                 <>
-                  <TableRow key={group.majorMinorPatch} className="cursor-pointer hover:bg-muted/50">
-                    <TableCell
-                      className="font-medium"
-                      onClick={() => toggleVersionExpansion(group.majorMinorPatch)}
-                    >
+                  <TableRow
+                    key={group.majorMinorPatch}
+                    className="cursor-pointer hover:bg-muted/50"
+                    onClick={() => toggleVersionExpansion(group.majorMinorPatch)}
+                  >
+                    <TableCell className="font-medium">
                       <div className="flex items-center gap-2">
                         <span>{group.majorMinorPatch}</span>
                         {isExpanded ? (
@@ -223,7 +227,10 @@ export function CompatibilityMatrix({ results }: CompatibilityMatrixProps) {
                                 <TooltipTrigger asChild>
                                   <button
                                     className="cursor-pointer border-none bg-transparent p-0"
-                                    onClick={() => toggleVersionExpansion(group.majorMinorPatch)}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      toggleVersionExpansion(group.majorMinorPatch);
+                                    }}
                                   >
                                     <AlertCircle className="h-5 w-5 text-yellow-600 inline-block" />
                                   </button>

@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Button } from '@/components/ui/button';
 import { FileComparisonMatrix } from '@/components/FileComparisonMatrix';
 import { FileDetailModal } from '@/components/FileDetailModal';
 import ThemeSwitcher from '@/components/ThemeSwitcher';
@@ -48,16 +47,14 @@ export function ComparisonResultsPage() {
         <ThemeSwitcher />
       </header>
       <div className="sticky top-0 z-40 border-b bg-background">
-        <div className="container mx-auto px-4 py-4 space-y-4">
+        <div className="container mx-auto px-4 py-4 space-y-2">
           <div>
-            <Button
-              variant="ghost"
-              size="sm"
+            <a
               onClick={() => navigate('/')}
-              className="text-sm text-muted-foreground hover:text-foreground"
+              className="text-sm text-muted-foreground hover:text-foreground hover:underline cursor-pointer"
             >
-              Start Over
-            </Button>
+              ← Start Over
+            </a>
           </div>
           <div>
             <h1 className="text-2xl font-semibold">File Comparison Results</h1>
