@@ -165,7 +165,7 @@ export function CompatibilityMatrix({ results }: CompatibilityMatrixProps) {
   );
 
   return (
-    <TooltipProvider>
+    <TooltipProvider disableHoverableContent>
       <Table>
         <TableHeader>
           <TableRow>

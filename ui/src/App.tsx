@@ -4,6 +4,7 @@ import { ThemeProvider } from 'next-themes'
 import { Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Progress } from '@/components/ui/progress'
 import { Toaster } from '@/components/ui/sonner'
 import { toast } from 'sonner'
 import ThemeSwitcher from '@/components/ThemeSwitcher'
@@ -30,6 +31,7 @@ function HomePage() {
   const [fileResults, setFileResults] = useState<Map<string, CompareResponse>>(new Map())
   const [selectedFileForModal, setSelectedFileForModal] = useState<string | null>(null)
   const [isProcessing, setIsProcessing] = useState(false)
+  const [shouldNavigateToResults, setShouldNavigateToResults] = useState(false)
   const [versionInfo, setVersionInfo] = useState<{ version: string } | null>(null)
 
   useEffect(() => {
@@ -57,6 +59,23 @@ function HomePage() {
     fetchVersionInfo()
     refreshHashtables()
   }, [])
+
+  useEffect(() => {
+    const allFilesProcessed = files.length > 0 && files.every(f => {
+      const status = fileStatuses.get(f.name)
+      return status && (status.status === 'success' || status.status === 'error')
+    })
+
+    if (shouldNavigateToResults && !isProcessing && allFilesProcessed && files.length > 1) {
+      navigate('/results', {
+        state: {
+          results: Object.fromEntries(fileResults),
+          filenames: files.map(f => f.name)
+        }
+      })
+      setShouldNavigateToResults(false)
+    }
+  }, [shouldNavigateToResults, isProcessing, fileStatuses, fileResults, files, navigate])
 
   const handleFilesSelected = (selectedFiles: File[]) => {
     setFiles(selectedFiles)
@@ -180,35 +199,20 @@ function HomePage() {
     if (files.length === 0) return
 
     setIsProcessing(true)
+    setShouldNavigateToResults(false)
 
     const localResults = new Map<string, CompareResponse>()
     const queue = [...files]
-    const activeUploads = new Set<Promise<void>>()
 
-    while (queue.length > 0 || activeUploads.size > 0) {
-      while (activeUploads.size < CONCURRENCY && queue.length > 0) {
-        const file = queue.shift()!
-        const upload = processFile(file, localResults)
-          .finally(() => activeUploads.delete(upload))
-
-        activeUploads.add(upload)
-      }
-
-      if (activeUploads.size > 0) {
-        await Promise.race(activeUploads)
-      }
+    while (queue.length > 0) {
+      const batch = queue.splice(0, CONCURRENCY)
+      await Promise.all(batch.map(file => processFile(file, localResults)))
     }
 
     setIsProcessing(false)
 
-    // Navigate to results page for multi-file comparison
     if (files.length > 1) {
-      navigate('/results', {
-        state: {
-          results: Object.fromEntries(localResults),
-          filenames: files.map(f => f.name)
-        }
-      })
+      setShouldNavigateToResults(true)
     }
   }
 
@@ -241,6 +245,10 @@ function HomePage() {
     const status = fileStatuses.get(f.name)
     return status && (status.status === 'success' || status.status === 'error')
   })
+
+  const completedFiles = Array.from(fileStatuses.values())
+    .filter(s => s.status === 'success' || s.status === 'error').length
+  const overallProgress = files.length > 0 ? (completedFiles / files.length) * 100 : 0
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -295,6 +303,10 @@ function HomePage() {
                   )}
                 </Button>
               </div>
+
+              {isProcessing && files.length > 0 && overallProgress > 0 && overallProgress < 100 && (
+                <Progress value={overallProgress} />
+              )}
             </CardContent>
           </Card>
         </div>

@@ -74,7 +74,7 @@ export function FileComparisonMatrix({ results, filenames, onRowClick }: FileCom
   };
 
   return (
-    <TooltipProvider>
+    <TooltipProvider disableHoverableContent>
       <Table>
         <TableHeader>
           <TableRow>
