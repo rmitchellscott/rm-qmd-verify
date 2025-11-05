@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState, useRef } from 'react'
+import { extractQMDsFromZip, extractQMDsFromFolder, sortFilesLexicographically } from '@/lib/fileUtils'
 
 interface FileDropzoneProps {
   onFileSelected: (file: File) => void
@@ -13,6 +14,8 @@ interface FileDropzoneProps {
 
 const ACCEPT_CONFIG = {
   'text/plain': ['.qmd'],
+  'application/zip': ['.zip'],
+  'application/x-gzip': ['.tar.gz', '.gz'],
 }
 
 export function FileDropzone({
@@ -27,38 +30,42 @@ export function FileDropzone({
   const [dragActive, setDragActive] = useState(false)
 
   const processFiles = useCallback(
-    (files: File[]) => {
-      const acceptedFiles: File[] = []
-      const rejectedFiles: File[] = []
+    async (files: File[]) => {
+      const allQMDFiles: File[] = []
 
-      files.forEach(file => {
-        const acceptedTypes = Object.keys(ACCEPT_CONFIG)
-        const acceptedExtensions = Object.values(ACCEPT_CONFIG).flat()
-
-        const isValidType = acceptedTypes.includes(file.type)
-        const isValidExtension = acceptedExtensions.some(ext =>
-          file.name.toLowerCase().endsWith(ext)
-        )
-
-        if (isValidType || isValidExtension) {
-          acceptedFiles.push(file)
+      for (const file of files) {
+        if (file.name.toLowerCase().endsWith('.zip')) {
+          try {
+            const extracted = await extractQMDsFromZip(file)
+            allQMDFiles.push(...extracted)
+          } catch (err) {
+            if (onError) {
+              onError(`Failed to extract ${file.name}: ${err}`)
+            }
+          }
+        } else if (file.name.toLowerCase().endsWith('.qmd')) {
+          allQMDFiles.push(file)
         } else {
-          rejectedFiles.push(file)
+          if (onError) {
+            onError(`Unsupported file type: ${file.name}`)
+          }
         }
-      })
+      }
 
-      if (rejectedFiles.length > 0 && onError) {
-        onError('Please select only .qmd files')
+      if (allQMDFiles.length === 0) {
+        if (onError) {
+          onError('No .qmd files found')
+        }
         return
       }
 
-      if (acceptedFiles.length > 0) {
-        if (multiple) {
-          const combinedFiles = [...existingFiles, ...acceptedFiles]
-          onFilesSelected(combinedFiles)
-        } else {
-          onFileSelected(acceptedFiles[0])
-        }
+      const sortedFiles = sortFilesLexicographically(allQMDFiles)
+
+      if (multiple) {
+        const combinedFiles = sortFilesLexicographically([...existingFiles, ...sortedFiles])
+        onFilesSelected(combinedFiles)
+      } else {
+        onFileSelected(sortedFiles[0])
       }
     },
     [onFileSelected, onFilesSelected, onError, multiple, existingFiles]
@@ -85,15 +92,33 @@ export function FileDropzone({
       e.preventDefault()
     }
 
-    function handleDrop(e: DragEvent) {
+    async function handleDrop(e: DragEvent) {
       e.preventDefault()
       counter = 0
       setDragActive(false)
 
-      const files = Array.from(e.dataTransfer?.files || [])
-      if (files.length > 0) {
-        const filesToProcess = multiple ? files : [files[0]]
-        processFiles(filesToProcess)
+      const items = Array.from(e.dataTransfer?.items || [])
+      const allFiles: File[] = []
+
+      if (items.length > 0 && typeof items[0].webkitGetAsEntry === 'function') {
+        for (const item of items) {
+          const entry = item.webkitGetAsEntry()
+          if (entry) {
+            try {
+              const extractedFiles = await extractQMDsFromFolder(entry)
+              allFiles.push(...extractedFiles)
+            } catch (err) {
+              console.error('Failed to extract from folder:', err)
+            }
+          }
+        }
+      } else {
+        const files = Array.from(e.dataTransfer?.files || [])
+        allFiles.push(...files)
+      }
+
+      if (allFiles.length > 0) {
+        processFiles(allFiles)
       }
     }
 
@@ -145,7 +170,12 @@ export function FileDropzone({
         className="hidden"
         disabled={disabled}
       />
-      <p className="text-sm">Click or drag and drop a .qmd file here to compare against available hashtables</p>
+      <p className="text-sm">
+        {multiple
+          ? 'Click or drag and drop .qmd files, folders, or ZIP archives here'
+          : 'Click or drag and drop a .qmd file here to compare against available hashtables'
+        }
+      </p>
     </div>
   )
 }

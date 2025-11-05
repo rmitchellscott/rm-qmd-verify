@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/rmitchellscott/rm-qmd-verify/internal/config"
 	"github.com/rmitchellscott/rm-qmd-verify/internal/handlers"
+	"github.com/rmitchellscott/rm-qmd-verify/internal/jobs"
 	"github.com/rmitchellscott/rm-qmd-verify/pkg/hashtab"
 	"github.com/rmitchellscott/rm-qmd-verify/internal/logging"
 	"github.com/rmitchellscott/rm-qmd-verify/internal/qmldiff"
@@ -61,6 +62,7 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 
 	qmldiffService := qmldiff.NewService("", hashtabService)
+	jobStore := jobs.NewStore()
 
 	r := chi.NewRouter()
 
@@ -70,10 +72,12 @@ func runServe(cmd *cobra.Command, args []string) {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(60 * time.Second))
 
-	apiHandler := handlers.NewAPIHandler(qmldiffService, hashtabService)
+	apiHandler := handlers.NewAPIHandler(qmldiffService, hashtabService, jobStore)
 	r.Route("/api", func(r chi.Router) {
 		r.Post("/compare", apiHandler.Compare)
 		r.Get("/hashtables", apiHandler.ListHashtables)
+		r.Get("/results/{jobId}", apiHandler.GetResults)
+		r.Get("/status/ws/{jobId}", handlers.StatusWSHandler(jobStore))
 		r.Get("/version", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
