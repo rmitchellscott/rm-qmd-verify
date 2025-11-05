@@ -4,13 +4,19 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 
+export interface MissingHashInfo {
+  hash: string;
+  line: number;
+  column: number;
+}
+
 export interface ComparisonResult {
   hashtable: string;
   os_version: string;
   device: string;
   compatible: boolean;
   error_detail?: string;
-  missing_hashes?: string[];
+  missing_hashes?: MissingHashInfo[];
 }
 
 export interface CompareResponse {
@@ -152,10 +158,20 @@ export function CompatibilityMatrix({ results }: CompatibilityMatrixProps) {
           </Tooltip>
           <PopoverContent>
             <div className="text-sm">
-              <div className="mb-2">Missing {result.missing_hashes && result.missing_hashes.length > 1 ? 'hashes' : 'hash'}:</div>
-              {result.missing_hashes && result.missing_hashes.map(hash => (
-                <div key={hash} className="font-mono">{hash}</div>
-              ))}
+              <div className="mb-2 font-semibold">Missing {result.missing_hashes && result.missing_hashes.length > 1 ? 'Hashes' : 'Hash'}</div>
+              {result.missing_hashes && (() => {
+                const maxPositionWidth = Math.max(...result.missing_hashes.map(h =>
+                  `L${h.line}:C${h.column}`.length
+                ));
+                return result.missing_hashes.map(hashInfo => {
+                  const position = `L${hashInfo.line}:C${hashInfo.column}`.padEnd(maxPositionWidth, ' ');
+                  return (
+                    <div key={hashInfo.hash} className="font-mono mb-1 text-sm break-all">
+                      {position} {hashInfo.hash}
+                    </div>
+                  );
+                });
+              })()}
               {(!result.missing_hashes || result.missing_hashes.length === 0) && (
                 <div className="font-mono">Unknown</div>
               )}

@@ -1,35 +1,55 @@
 package qmd
 
-func ExtractHashesFromTokens(tokens []*DiffToken) []uint64 {
-	hashSet := make(map[uint64]bool)
+type HashWithPosition struct {
+	Hash   uint64
+	Line   int
+	Column int
+}
+
+func ExtractHashesFromTokens(tokens []*DiffToken) []HashWithPosition {
+	hashMap := make(map[uint64]*HashWithPosition)
 
 	for _, token := range tokens {
 		if token.Type == DiffHashedValue && token.HashedValue != nil {
-			hashSet[token.HashedValue.Hash] = true
+			hash := token.HashedValue.Hash
+			if _, exists := hashMap[hash]; !exists {
+				hashMap[hash] = &HashWithPosition{
+					Hash:   hash,
+					Line:   token.Line,
+					Column: token.Column,
+				}
+			}
 		}
 
 		if token.Type == DiffQMLCode && token.QMLCode != nil {
-			extractHashesFromQMLTokens(token.QMLCode, hashSet)
+			extractHashesFromQMLTokens(token.QMLCode, hashMap)
 		}
 	}
 
-	hashes := make([]uint64, 0, len(hashSet))
-	for hash := range hashSet {
-		hashes = append(hashes, hash)
+	hashes := make([]HashWithPosition, 0, len(hashMap))
+	for _, hashPos := range hashMap {
+		hashes = append(hashes, *hashPos)
 	}
 
 	return hashes
 }
 
-func extractHashesFromQMLTokens(tokens []*QMLToken, hashSet map[uint64]bool) {
+func extractHashesFromQMLTokens(tokens []*QMLToken, hashMap map[uint64]*HashWithPosition) {
 	for _, token := range tokens {
 		if token.Type == QMLExtension && token.Extension != nil {
-			hashSet[token.Extension.Hash] = true
+			hash := token.Extension.Hash
+			if _, exists := hashMap[hash]; !exists {
+				hashMap[hash] = &HashWithPosition{
+					Hash:   hash,
+					Line:   token.Line,
+					Column: token.Column,
+				}
+			}
 		}
 	}
 }
 
-func ExtractHashes(content string) ([]uint64, error) {
+func ExtractHashes(content string) ([]HashWithPosition, error) {
 	lexer := NewDiffLexer(content)
 	tokens, err := lexer.Tokenize()
 	if err != nil {

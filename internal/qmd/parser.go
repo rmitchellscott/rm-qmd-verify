@@ -8,6 +8,6 @@ func NewParser(content string) *Parser {
 	return &Parser{content: content}
 }
 
-func (p *Parser) ExtractHashes() ([]uint64, error) {
+func (p *Parser) ExtractHashes() ([]HashWithPosition, error) {
 	return ExtractHashes(p.content)
 }

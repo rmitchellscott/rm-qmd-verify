@@ -25,9 +25,9 @@ AFFECT /SomeFile.qml
 		t.Errorf("Expected %d hashes, got %d", len(expected), len(hashes))
 	}
 
-	for _, hash := range hashes {
-		if !expected[hash] {
-			t.Errorf("Unexpected hash: %d", hash)
+	for _, hashPos := range hashes {
+		if !expected[hashPos.Hash] {
+			t.Errorf("Unexpected hash: %d", hashPos.Hash)
 		}
 	}
 }
@@ -55,9 +55,9 @@ AFFECT /SomeFile.qml
 		t.Errorf("Expected %d hashes, got %d", len(expected), len(hashes))
 	}
 
-	for _, hash := range hashes {
-		if !expected[hash] {
-			t.Errorf("Unexpected hash: %d", hash)
+	for _, hashPos := range hashes {
+		if !expected[hashPos.Hash] {
+			t.Errorf("Unexpected hash: %d", hashPos.Hash)
 		}
 	}
 }
@@ -102,9 +102,9 @@ AFFECT /SomeFile.qml
 		t.Errorf("Expected %d hashes, got %d", len(expected), len(hashes))
 	}
 
-	for _, hash := range hashes {
-		if !expected[hash] {
-			t.Errorf("Unexpected hash: %d", hash)
+	for _, hashPos := range hashes {
+		if !expected[hashPos.Hash] {
+			t.Errorf("Unexpected hash: %d", hashPos.Hash)
 		}
 	}
 }
@@ -134,9 +134,9 @@ AFFECT /SomeFile.qml
 		t.Errorf("Expected %d hashes, got %d", len(expected), len(hashes))
 	}
 
-	for _, hash := range hashes {
-		if !expected[hash] {
-			t.Errorf("Unexpected hash: %d", hash)
+	for _, hashPos := range hashes {
+		if !expected[hashPos.Hash] {
+			t.Errorf("Unexpected hash: %d", hashPos.Hash)
 		}
 	}
 }
