@@ -62,10 +62,9 @@ function compareVersions(a: string, b: string): number {
 
 interface CompatibilityMatrixProps {
   results: CompareResponse;
-  filename?: string;
 }
 
-export function CompatibilityMatrix({ results, filename }: CompatibilityMatrixProps) {
+export function CompatibilityMatrix({ results }: CompatibilityMatrixProps) {
   const [expandedVersions, setExpandedVersions] = useState<Set<string>>(new Set());
 
   const toggleVersionExpansion = (majorMinorPatch: string) => {
@@ -170,7 +169,7 @@ export function CompatibilityMatrix({ results, filename }: CompatibilityMatrixPr
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead className="min-w-24 sm:min-w-32">{filename || 'Version'}</TableHead>
+            <TableHead className="min-w-24 sm:min-w-32"></TableHead>
             {deviceKeys.map(device => (
               <TableHead key={device} className="text-center">
                 <span className="sm:hidden">{deviceNames[device].short}</span>

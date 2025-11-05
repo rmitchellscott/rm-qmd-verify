@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { BrowserRouter, Routes, Route, useNavigate } from 'react-router-dom'
 import { ThemeProvider } from 'next-themes'
 import { Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -9,8 +10,8 @@ import ThemeSwitcher from '@/components/ThemeSwitcher'
 import { FileDropzone } from '@/components/FileDropzone'
 import { FileList } from '@/components/FileList'
 import { CompatibilityMatrix, type CompareResponse } from '@/components/CompatibilityMatrix'
-import { FileComparisonMatrix } from '@/components/FileComparisonMatrix'
 import { FileDetailModal } from '@/components/FileDetailModal'
+import { ComparisonResultsPage } from '@/components/ComparisonResultsPage'
 import { waitForJobWS } from '@/lib/websocket'
 import type { JobStatus } from '@/lib/websocket'
 
@@ -22,7 +23,8 @@ interface FileStatus {
   message?: string;
 }
 
-function AppContent() {
+function HomePage() {
+  const navigate = useNavigate()
   const [files, setFiles] = useState<File[]>([])
   const [fileStatuses, setFileStatuses] = useState<Map<string, FileStatus>>(new Map())
   const [fileResults, setFileResults] = useState<Map<string, CompareResponse>>(new Map())
@@ -125,7 +127,7 @@ function AppContent() {
     })
   }
 
-  const processFile = async (file: File) => {
+  const processFile = async (file: File, localResults?: Map<string, CompareResponse>) => {
     try {
       updateFileStatus(file.name, { status: 'uploading', progress: 0 })
 
@@ -154,6 +156,10 @@ function AppContent() {
       const results: CompareResponse = await resultsResponse.json()
       setFileResults(prev => new Map(prev).set(file.name, results))
 
+      if (localResults) {
+        localResults.set(file.name, results)
+      }
+
       updateFileStatus(file.name, {
         status: 'success',
         progress: 100,
@@ -175,13 +181,14 @@ function AppContent() {
 
     setIsProcessing(true)
 
+    const localResults = new Map<string, CompareResponse>()
     const queue = [...files]
     const activeUploads = new Set<Promise<void>>()
 
     while (queue.length > 0 || activeUploads.size > 0) {
       while (activeUploads.size < CONCURRENCY && queue.length > 0) {
         const file = queue.shift()!
-        const upload = processFile(file)
+        const upload = processFile(file, localResults)
           .finally(() => activeUploads.delete(upload))
 
         activeUploads.add(upload)
@@ -193,6 +200,16 @@ function AppContent() {
     }
 
     setIsProcessing(false)
+
+    // Navigate to results page for multi-file comparison
+    if (files.length > 1) {
+      navigate('/results', {
+        state: {
+          results: Object.fromEntries(localResults),
+          filenames: files.map(f => f.name)
+        }
+      })
+    }
   }
 
   const handleReset = () => {
@@ -226,12 +243,12 @@ function AppContent() {
   })
 
   return (
-    <>
+    <div className="min-h-screen flex flex-col">
       <header className="flex items-center justify-between px-8 py-2 bg-background">
         <h1 className="text-2xl font-bold">reMarkable QMD Verifier</h1>
         <ThemeSwitcher />
       </header>
-      <main className="bg-background pt-0 pb-8 px-8">
+      <main className="flex-1 bg-background pt-0 pb-8 px-8">
         <div className="max-w-md mx-auto space-y-6">
           <Card className="bg-card">
             <CardHeader>
@@ -250,60 +267,48 @@ function AppContent() {
                 <FileList
                   files={files}
                   onRemove={handleRemoveFile}
-                  onClearAll={handleReset}
                   disabled={isProcessing}
                 />
               )}
 
-              {files.length > 0 && (
-                <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    onClick={handleReset}
-                    className="flex-1"
-                    disabled={isProcessing}
-                  >
-                    Reset
-                  </Button>
-                  <Button
-                    onClick={handleUploadAll}
-                    disabled={files.length === 0 || isProcessing}
-                    className="flex-1"
-                  >
-                    {isProcessing ? (
-                      <>
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Processing...
-                      </>
-                    ) : (
-                      'Compare All'
-                    )}
-                  </Button>
-                </div>
-              )}
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  onClick={handleReset}
+                  className="flex-1"
+                  disabled={files.length === 0 || isProcessing}
+                >
+                  Reset
+                </Button>
+                <Button
+                  onClick={handleUploadAll}
+                  disabled={files.length === 0 || isProcessing}
+                  className="flex-1"
+                >
+                  {isProcessing ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Processing...
+                    </>
+                  ) : (
+                    'Compare'
+                  )}
+                </Button>
+              </div>
             </CardContent>
           </Card>
         </div>
 
-        {hasResults && allFilesProcessed && (
+        {hasResults && allFilesProcessed && files.length === 1 && fileResults.has(files[0].name) && (
           <div className="max-w-4xl mx-auto mt-6">
             <Card className="bg-card">
               <CardHeader>
                 <CardTitle>Compatibility Results</CardTitle>
               </CardHeader>
               <CardContent>
-                {files.length === 1 && fileResults.has(files[0].name) ? (
-                  <CompatibilityMatrix
-                    results={fileResults.get(files[0].name)!}
-                    filename={files[0].name}
-                  />
-                ) : (
-                  <FileComparisonMatrix
-                    results={fileResults}
-                    filenames={files.map(f => f.name)}
-                    onRowClick={setSelectedFileForModal}
-                  />
-                )}
+                <CompatibilityMatrix
+                  results={fileResults.get(files[0].name)!}
+                />
               </CardContent>
             </Card>
           </div>
@@ -316,9 +321,8 @@ function AppContent() {
           onOpenChange={(open) => !open && setSelectedFileForModal(null)}
         />
       </main>
-      <Toaster />
       {versionInfo && (
-        <footer className="fixed bottom-0 left-0 right-0 py-2 bg-background">
+        <footer className="py-2 bg-background">
           <div className="text-center text-sm text-muted-foreground">
             <span>{versionInfo.version} • </span>
             <a
@@ -332,14 +336,20 @@ function AppContent() {
           </div>
         </footer>
       )}
-    </>
+      <Toaster />
+    </div>
   )
 }
 
 export default function App() {
   return (
     <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
-      <AppContent />
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/results" element={<ComparisonResultsPage />} />
+        </Routes>
+      </BrowserRouter>
     </ThemeProvider>
   )
 }

@@ -14,13 +14,13 @@ export function FileDetailModal({ filename, results, open, onOpenChange }: FileD
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
+      <DialogContent className="max-w-6xl sm:max-w-6xl max-h-[80vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="truncate">{filename}</DialogTitle>
         </DialogHeader>
         <Card>
           <CardContent className="pt-6">
-            <CompatibilityMatrix results={results} filename={filename} />
+            <CompatibilityMatrix results={results} />
           </CardContent>
         </Card>
       </DialogContent>
