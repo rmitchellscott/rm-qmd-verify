@@ -1,12 +1,15 @@
 package cmd
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -16,10 +19,11 @@ import (
 	"github.com/rmitchellscott/rm-qmd-verify/internal/config"
 	"github.com/rmitchellscott/rm-qmd-verify/internal/handlers"
 	"github.com/rmitchellscott/rm-qmd-verify/internal/jobs"
-	"github.com/rmitchellscott/rm-qmd-verify/pkg/hashtab"
 	"github.com/rmitchellscott/rm-qmd-verify/internal/logging"
 	"github.com/rmitchellscott/rm-qmd-verify/internal/qmldiff"
 	"github.com/rmitchellscott/rm-qmd-verify/internal/version"
+	"github.com/rmitchellscott/rm-qmd-verify/pkg/hashtab"
+	"github.com/rmitchellscott/rm-qmd-verify/pkg/qmltree"
 )
 
 var embeddedUI embed.FS
@@ -61,7 +65,21 @@ func runServe(cmd *cobra.Command, args []string) {
 		logging.Info(logging.ComponentStartup, "  - %s (%d entries)", ht.Name, len(ht.Entries))
 	}
 
-	qmldiffService := qmldiff.NewService("", hashtabService)
+	treeDir := config.Get("QML_TREE_DIR", "./qml-trees")
+	logging.Info(logging.ComponentStartup, "Loading QML trees from: %s", treeDir)
+
+	treeService := qmltree.NewService(treeDir)
+	trees := treeService.GetTrees()
+	logging.Info(logging.ComponentStartup, "Loaded %d QML trees", len(trees))
+	for _, tree := range trees {
+		logging.Info(logging.ComponentStartup, "  - %s (%s / %s, %d files)", tree.Name, tree.OSVersion, tree.Device, tree.FileCount)
+	}
+
+	// Initialize qmldiff service with CLI binary
+	qmldiffBinary := config.Get("QMLDIFF_BINARY", "./qmldiff")
+	qmldiffService := qmldiff.NewService(qmldiffBinary, hashtabService, treeService)
+	logging.Info(logging.ComponentStartup, "Initialized qmldiff service (binary: %s)", qmldiffBinary)
+
 	jobStore := jobs.NewStore()
 
 	r := chi.NewRouter()
@@ -72,10 +90,12 @@ func runServe(cmd *cobra.Command, args []string) {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(60 * time.Second))
 
-	apiHandler := handlers.NewAPIHandler(qmldiffService, hashtabService, jobStore)
+	apiHandler := handlers.NewAPIHandler(qmldiffService, hashtabService, treeService, jobStore)
 	r.Route("/api", func(r chi.Router) {
 		r.Post("/compare", apiHandler.Compare)
+		r.Post("/validate/tree", apiHandler.ValidateTree)
 		r.Get("/hashtables", apiHandler.ListHashtables)
+		r.Get("/trees", apiHandler.ListTrees)
 		r.Get("/results/{jobId}", apiHandler.GetResults)
 		r.Get("/status/ws/{jobId}", handlers.StatusWSHandler(jobStore))
 		r.Get("/version", func(w http.ResponseWriter, r *http.Request) {
@@ -108,8 +128,35 @@ func runServe(cmd *cobra.Command, args []string) {
 	addr := fmt.Sprintf(":%s", port)
 	logging.Info(logging.ComponentServer, "Starting server on %s", addr)
 
-	if err := http.ListenAndServe(addr, r); err != nil {
-		logging.Error(logging.ComponentServer, "Failed to start server: %v", err)
+	// Setup graceful shutdown
+	server := &http.Server{
+		Addr:    addr,
+		Handler: r,
+	}
+
+	// Start server in goroutine
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logging.Error(logging.ComponentServer, "Failed to start server: %v", err)
+			os.Exit(1)
+		}
+	}()
+
+	// Wait for interrupt signal
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	<-sigChan
+
+	logging.Info(logging.ComponentServer, "Shutting down server...")
+
+	// Shutdown HTTP server
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(ctx); err != nil {
+		logging.Error(logging.ComponentServer, "Error shutting down server: %v", err)
 		os.Exit(1)
 	}
+
+	logging.Info(logging.ComponentServer, "Server shutdown complete")
 }

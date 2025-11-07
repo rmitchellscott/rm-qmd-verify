@@ -16,8 +16,6 @@ import { ComparisonResultsPage } from '@/components/ComparisonResultsPage'
 import { waitForJobWS } from '@/lib/websocket'
 import type { JobStatus } from '@/lib/websocket'
 
-const CONCURRENCY = 3
-
 interface FileStatus {
   status: 'pending' | 'uploading' | 'processing' | 'success' | 'error';
   progress: number;
@@ -56,8 +54,18 @@ function HomePage() {
       }
     }
 
+    const refreshTrees = async () => {
+      try {
+        // Trigger tree check/reload on page load
+        await fetch('/api/trees')
+      } catch (error) {
+        console.error('Failed to refresh trees:', error)
+      }
+    }
+
     fetchVersionInfo()
     refreshHashtables()
+    refreshTrees()
   }, [])
 
   useEffect(() => {
@@ -107,8 +115,8 @@ function HomePage() {
     })
   }
 
-  const uploadFileWithProgress = async (
-    file: File,
+  const uploadBatchWithProgress = async (
+    files: File[],
     onProgress: (percent: number) => void
   ): Promise<{ jobId: string }> => {
     return new Promise((resolve, reject) => {
@@ -139,60 +147,13 @@ function HomePage() {
       })
 
       const formData = new FormData()
-      formData.append('file', file)
+      files.forEach(file => {
+        formData.append('files', file)
+      })
 
       xhr.open('POST', '/api/compare')
       xhr.send(formData)
     })
-  }
-
-  const processFile = async (file: File, localResults?: Map<string, CompareResponse>) => {
-    try {
-      updateFileStatus(file.name, { status: 'uploading', progress: 0 })
-
-      const { jobId } = await uploadFileWithProgress(file, (progress) => {
-        updateFileStatus(file.name, { progress, message: 'Uploading...' })
-      })
-
-      updateFileStatus(file.name, {
-        status: 'processing',
-        progress: 0,
-        message: 'Processing...'
-      })
-
-      await waitForJobWS(jobId, (status: JobStatus) => {
-        updateFileStatus(file.name, {
-          progress: status.progress,
-          message: status.message
-        })
-      })
-
-      const resultsResponse = await fetch(`/api/results/${jobId}`)
-      if (!resultsResponse.ok) {
-        throw new Error('Failed to fetch results')
-      }
-
-      const results: CompareResponse = await resultsResponse.json()
-      setFileResults(prev => new Map(prev).set(file.name, results))
-
-      if (localResults) {
-        localResults.set(file.name, results)
-      }
-
-      updateFileStatus(file.name, {
-        status: 'success',
-        progress: 100,
-        message: 'Complete'
-      })
-    } catch (error) {
-      updateFileStatus(file.name, {
-        status: 'error',
-        message: error instanceof Error ? error.message : 'An error occurred'
-      })
-      toast.error("Processing failed", {
-        description: `${file.name}: ${error instanceof Error ? error.message : 'Unknown error'}`,
-      })
-    }
   }
 
   const handleUploadAll = async () => {
@@ -201,18 +162,99 @@ function HomePage() {
     setIsProcessing(true)
     setShouldNavigateToResults(false)
 
-    const localResults = new Map<string, CompareResponse>()
-    const queue = [...files]
+    try {
+      // Set all files to uploading state
+      files.forEach(file => {
+        updateFileStatus(file.name, { status: 'uploading', progress: 0 })
+      })
 
-    while (queue.length > 0) {
-      const batch = queue.splice(0, CONCURRENCY)
-      await Promise.all(batch.map(file => processFile(file, localResults)))
-    }
+      // Upload all files in a single batch request
+      const { jobId } = await uploadBatchWithProgress(files, (progress) => {
+        // Update all files with upload progress
+        files.forEach(file => {
+          updateFileStatus(file.name, { progress, message: 'Uploading...' })
+        })
+      })
 
-    setIsProcessing(false)
+      // Set all files to processing state
+      files.forEach(file => {
+        updateFileStatus(file.name, {
+          status: 'processing',
+          progress: 0,
+          message: 'Processing...'
+        })
+      })
 
-    if (files.length > 1) {
-      setShouldNavigateToResults(true)
+      // Wait for batch processing to complete
+      await waitForJobWS(jobId, (status: JobStatus) => {
+        // Update all files with processing progress
+        files.forEach(file => {
+          updateFileStatus(file.name, {
+            progress: status.progress,
+            message: status.message
+          })
+        })
+      })
+
+      // Fetch batch results
+      const resultsResponse = await fetch(`/api/results/${jobId}`)
+      if (!resultsResponse.ok) {
+        throw new Error('Failed to fetch results')
+      }
+
+      const batchResults = await resultsResponse.json()
+
+      // Handle single file (backward compatibility)
+      if (files.length === 1) {
+        const results: CompareResponse = batchResults
+        setFileResults(prev => new Map(prev).set(files[0].name, results))
+
+        updateFileStatus(files[0].name, {
+          status: 'success',
+          progress: 100,
+          message: 'Complete'
+        })
+      } else {
+        // Handle multiple files (batch response)
+        const resultsMap: Record<string, CompareResponse> = batchResults
+        const newResults = new Map(fileResults)
+
+        files.forEach(file => {
+          if (resultsMap[file.name]) {
+            newResults.set(file.name, resultsMap[file.name])
+            updateFileStatus(file.name, {
+              status: 'success',
+              progress: 100,
+              message: 'Complete'
+            })
+          } else {
+            updateFileStatus(file.name, {
+              status: 'error',
+              message: 'No results received'
+            })
+          }
+        })
+
+        setFileResults(newResults)
+      }
+    } catch (error) {
+      // Mark all files as error
+      files.forEach(file => {
+        updateFileStatus(file.name, {
+          status: 'error',
+          message: error instanceof Error ? error.message : 'An error occurred'
+        })
+      })
+
+      toast.error("Processing failed", {
+        description: error instanceof Error ? error.message : 'Unknown error',
+      })
+    } finally {
+      setIsProcessing(false)
+
+      if (files.length > 1) {
+        setShouldNavigateToResults(true)
+      }
     }
   }
 

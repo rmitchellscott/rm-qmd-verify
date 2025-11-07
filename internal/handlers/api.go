@@ -1,111 +1,301 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"github.com/rmitchellscott/rm-qmd-verify/pkg/hashtab"
 	"github.com/rmitchellscott/rm-qmd-verify/internal/jobs"
 	"github.com/rmitchellscott/rm-qmd-verify/internal/logging"
 	"github.com/rmitchellscott/rm-qmd-verify/internal/qmldiff"
+	"github.com/rmitchellscott/rm-qmd-verify/pkg/hashtab"
+	"github.com/rmitchellscott/rm-qmd-verify/pkg/qmltree"
 )
 
 type APIHandler struct {
 	qmldiffService *qmldiff.Service
 	hashtabService *hashtab.Service
+	treeService    *qmltree.Service
 	jobStore       *jobs.Store
 }
 
-func NewAPIHandler(qmldiffService *qmldiff.Service, hashtabService *hashtab.Service, jobStore *jobs.Store) *APIHandler {
+func NewAPIHandler(qmldiffService *qmldiff.Service, hashtabService *hashtab.Service, treeService *qmltree.Service, jobStore *jobs.Store) *APIHandler {
 	return &APIHandler{
 		qmldiffService: qmldiffService,
 		hashtabService: hashtabService,
+		treeService:    treeService,
 		jobStore:       jobStore,
 	}
 }
 
 type CompareResponse struct {
-	Compatible   []qmldiff.ComparisonResult `json:"compatible"`
-	Incompatible []qmldiff.ComparisonResult `json:"incompatible"`
-	TotalChecked int                        `json:"total_checked"`
+	Compatible   []qmldiff.TreeComparisonResult `json:"compatible"`
+	Incompatible []qmldiff.TreeComparisonResult `json:"incompatible"`
+	TotalChecked int                            `json:"total_checked"`
+	Mode         string                         `json:"mode"` // "tree" or "hash"
 }
 
 func (h *APIHandler) Compare(w http.ResponseWriter, r *http.Request) {
-	file, header, err := r.FormFile("file")
-	if err != nil {
-		logging.Error(logging.ComponentHandler, "Failed to get uploaded file: %v", err)
+	// Parse multipart form (max 100MB for batch uploads)
+	if err := r.ParseMultipartForm(100 << 20); err != nil {
+		logging.Error(logging.ComponentHandler, "Failed to parse multipart form: %v", err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{
-			"error": "No file uploaded or invalid form data",
+			"error": "Failed to parse form data",
 		})
 		return
 	}
-	defer file.Close()
 
-	logging.Info(logging.ComponentHandler, "Received file upload: %s (%d bytes)", header.Filename, header.Size)
+	// Get all uploaded files
+	var fileHeaders []*multipart.FileHeader
 
-	content, err := io.ReadAll(file)
+	// Try batch upload first (new API)
+	if files := r.MultipartForm.File["files"]; len(files) > 0 {
+		fileHeaders = files
+	} else {
+		// Try single file upload (backward compatibility)
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			logging.Error(logging.ComponentHandler, "No files uploaded: %v", err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error": "No file uploaded or invalid form data",
+			})
+			return
+		}
+		file.Close()
+		fileHeaders = []*multipart.FileHeader{header}
+	}
+
+	// Create temp directory for uploaded files
+	tempDir, err := os.MkdirTemp("", "qmd-upload-*")
 	if err != nil {
-		logging.Error(logging.ComponentHandler, "Failed to read file content: %v", err)
+		logging.Error(logging.ComponentHandler, "Failed to create temp directory: %v", err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{
-			"error": "Failed to read uploaded file",
+			"error": "Failed to create temp directory",
 		})
 		return
 	}
 
-	if len(content) == 0 {
+	// Save uploaded files to temp directory
+	qmdPaths := make([]string, 0, len(fileHeaders))
+	filenames := make([]string, 0, len(fileHeaders))
+
+	for _, fileHeader := range fileHeaders {
+		file, err := fileHeader.Open()
+		if err != nil {
+			logging.Error(logging.ComponentHandler, "Failed to open uploaded file %s: %v", fileHeader.Filename, err)
+			os.RemoveAll(tempDir)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error": fmt.Sprintf("Failed to open file %s", fileHeader.Filename),
+			})
+			return
+		}
+
+		// Save to temp file
+		tempPath := filepath.Join(tempDir, fileHeader.Filename)
+		tempFile, err := os.Create(tempPath)
+		if err != nil {
+			file.Close()
+			os.RemoveAll(tempDir)
+			logging.Error(logging.ComponentHandler, "Failed to create temp file for %s: %v", fileHeader.Filename, err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error": fmt.Sprintf("Failed to save file %s", fileHeader.Filename),
+			})
+			return
+		}
+
+		bytesWritten, err := io.Copy(tempFile, file)
+		file.Close()
+		tempFile.Close()
+
+		if err != nil {
+			os.RemoveAll(tempDir)
+			logging.Error(logging.ComponentHandler, "Failed to save file content for %s: %v", fileHeader.Filename, err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error": fmt.Sprintf("Failed to save file %s", fileHeader.Filename),
+			})
+			return
+		}
+
+		if bytesWritten == 0 {
+			logging.Warn(logging.ComponentHandler, "Skipping empty file: %s", fileHeader.Filename)
+			continue
+		}
+
+		qmdPaths = append(qmdPaths, tempPath)
+		filenames = append(filenames, fileHeader.Filename)
+	}
+
+	if len(qmdPaths) == 0 {
+		os.RemoveAll(tempDir)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{
-			"error": "Uploaded file is empty",
+			"error": "All uploaded files are empty",
 		})
 		return
+	}
+
+	logging.Info(logging.ComponentHandler, "Received %d file upload(s): %v", len(filenames), filenames)
+
+	// Get validation mode from query parameter (default: tree)
+	mode := r.URL.Query().Get("mode")
+	if mode == "" {
+		mode = "tree"
 	}
 
 	jobID := uuid.New().String()
 	h.jobStore.Create(jobID)
 
-	logging.Info(logging.ComponentHandler, "Created job %s for file %s", jobID, header.Filename)
+	logging.Info(logging.ComponentHandler, "Created job %s for %d file(s) (mode: %s)", jobID, len(filenames), mode)
 
 	go func() {
-		logging.Info(logging.ComponentHandler, "Starting comparison against all hashtables for job %s", jobID)
-		results, err := h.qmldiffService.CompareAgainstAllWithProgress(content, h.jobStore, jobID)
-		if err != nil {
-			logging.Error(logging.ComponentHandler, "Comparison failed for job %s: %v", jobID, err)
-			h.jobStore.Update(jobID, "error", fmt.Sprintf("Comparison failed: %v", err), nil)
-			return
-		}
+		defer os.RemoveAll(tempDir) // Clean up temp files after processing
 
-		compatible := make([]qmldiff.ComparisonResult, 0)
-		incompatible := make([]qmldiff.ComparisonResult, 0)
-
-		for _, result := range results {
-			if result.Compatible {
-				compatible = append(compatible, result)
-			} else {
-				incompatible = append(incompatible, result)
+		if mode == "tree" {
+			// New default: tree validation mode with batch processing using worker pool
+			logging.Info(logging.ComponentHandler, "Starting batch tree validation for job %s (%d files)", jobID, len(filenames))
+			ctx := context.Background()
+			resultsMap, err := h.validateAgainstAllTreesWithWorkers(ctx, qmdPaths, filenames, h.jobStore, jobID)
+			if err != nil {
+				logging.Error(logging.ComponentHandler, "Tree validation failed for job %s: %v", jobID, err)
+				h.jobStore.Update(jobID, "error", fmt.Sprintf("Validation failed: %v", err), nil)
+				return
 			}
+
+			// For single file, return flat structure (backward compatibility)
+			if len(filenames) == 1 {
+				results := resultsMap[filenames[0]]
+				compatible := make([]qmldiff.TreeComparisonResult, 0)
+				incompatible := make([]qmldiff.TreeComparisonResult, 0)
+
+				for _, result := range results {
+					if result.Compatible {
+						compatible = append(compatible, result)
+					} else {
+						incompatible = append(incompatible, result)
+					}
+				}
+
+				logging.Info(logging.ComponentHandler, "Tree validation complete for job %s: %d compatible, %d incompatible",
+					jobID, len(compatible), len(incompatible))
+
+				response := CompareResponse{
+					Compatible:   compatible,
+					Incompatible: incompatible,
+					TotalChecked: len(results),
+					Mode:         "tree",
+				}
+
+				h.jobStore.SetResults(jobID, response)
+				h.jobStore.Update(jobID, "success", "Validation complete", nil)
+			} else {
+				// For multiple files, return map structure
+				batchResponse := make(map[string]CompareResponse)
+
+				for filename, results := range resultsMap {
+					compatible := make([]qmldiff.TreeComparisonResult, 0)
+					incompatible := make([]qmldiff.TreeComparisonResult, 0)
+
+					for _, result := range results {
+						if result.Compatible {
+							compatible = append(compatible, result)
+						} else {
+							incompatible = append(incompatible, result)
+						}
+					}
+
+					batchResponse[filename] = CompareResponse{
+						Compatible:   compatible,
+						Incompatible: incompatible,
+						TotalChecked: len(results),
+						Mode:         "tree",
+					}
+				}
+
+				logging.Info(logging.ComponentHandler, "Batch tree validation complete for job %s: %d files processed",
+					jobID, len(filenames))
+
+				h.jobStore.SetResults(jobID, batchResponse)
+				h.jobStore.Update(jobID, "success", "Batch validation complete", nil)
+			}
+		} else {
+			// Legacy hash-only mode (temporarily disabled with worker pool migration)
+			logging.Warn(logging.ComponentHandler, "Hash-only mode temporarily disabled during worker pool migration")
+			h.jobStore.Update(jobID, "error", "Hash-only mode temporarily unavailable", nil)
+			return
+
+			// TODO: Implement hash-only mode with worker pool
+			/*
+			if len(qmdContents) > 1 {
+				h.jobStore.Update(jobID, "error", "Hash-only mode does not support batch uploads", nil)
+				return
+			}
+
+			logging.Info(logging.ComponentHandler, "Starting legacy hash-only comparison for job %s", jobID)
+			results, err := h.qmldiffService.CompareAgainstAllWithProgress(qmdContents[0], h.jobStore, jobID)
+			if err != nil {
+				logging.Error(logging.ComponentHandler, "Comparison failed for job %s: %v", jobID, err)
+				h.jobStore.Update(jobID, "error", fmt.Sprintf("Comparison failed: %v", err), nil)
+				return
+			}
+
+			// Convert ComparisonResult to TreeComparisonResult for consistent response format
+			compatible := make([]qmldiff.TreeComparisonResult, 0)
+			incompatible := make([]qmldiff.TreeComparisonResult, 0)
+
+			for _, result := range results {
+				treeResult := qmldiff.TreeComparisonResult{
+					Hashtable:          result.Hashtable,
+					OSVersion:          result.OSVersion,
+					Device:             result.Device,
+					Compatible:         result.Compatible,
+					ErrorDetail:        result.ErrorDetail,
+					MissingHashes:      result.MissingHashes,
+					ValidationMode:     "hash",
+					TreeValidationUsed: false,
+				}
+
+				if treeResult.Compatible {
+					compatible = append(compatible, treeResult)
+				} else {
+					incompatible = append(incompatible, treeResult)
+				}
+			}
+
+			logging.Info(logging.ComponentHandler, "Comparison complete for job %s: %d compatible, %d incompatible",
+				jobID, len(compatible), len(incompatible))
+
+			response := CompareResponse{
+				Compatible:   compatible,
+				Incompatible: incompatible,
+				TotalChecked: len(results),
+				Mode:         "hash",
+			}
+
+			h.jobStore.SetResults(jobID, response)
+			h.jobStore.Update(jobID, "success", "Comparison complete", nil)
+			*/
 		}
-
-		logging.Info(logging.ComponentHandler, "Comparison complete for job %s: %d compatible, %d incompatible",
-			jobID, len(compatible), len(incompatible))
-
-		response := CompareResponse{
-			Compatible:   compatible,
-			Incompatible: incompatible,
-			TotalChecked: len(results),
-		}
-
-		h.jobStore.SetResults(jobID, response)
-		h.jobStore.Update(jobID, "success", "Comparison complete", nil)
 	}()
 
 	w.Header().Set("Content-Type", "application/json")
@@ -142,6 +332,40 @@ func (h *APIHandler) ListHashtables(w http.ResponseWriter, r *http.Request) {
 	response := map[string]interface{}{
 		"hashtables": info,
 		"count":      len(info),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}
+
+type TreeInfo struct {
+	Name      string `json:"name"`
+	OSVersion string `json:"os_version"`
+	Device    string `json:"device"`
+	FileCount int    `json:"file_count"`
+}
+
+func (h *APIHandler) ListTrees(w http.ResponseWriter, r *http.Request) {
+	if err := h.treeService.CheckAndReload(); err != nil {
+		logging.Error(logging.ComponentHandler, "Failed to check/reload trees: %v", err)
+	}
+
+	trees := h.treeService.GetTrees()
+
+	info := make([]TreeInfo, len(trees))
+	for i, tree := range trees {
+		info[i] = TreeInfo{
+			Name:      tree.Name,
+			OSVersion: tree.OSVersion,
+			Device:    tree.Device,
+			FileCount: tree.FileCount,
+		}
+	}
+
+	response := map[string]interface{}{
+		"trees": info,
+		"count": len(info),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -192,4 +416,125 @@ func (h *APIHandler) GetResults(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(job.Results)
+}
+
+// ValidateTree validates a QMD file against a full QML tree
+func (h *APIHandler) ValidateTree(w http.ResponseWriter, r *http.Request) {
+	// Parse multipart form (max 32MB)
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		logging.Error(logging.ComponentHandler, "Failed to parse multipart form: %v", err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "Failed to parse form data",
+		})
+		return
+	}
+
+	// Get QMD file
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		logging.Error(logging.ComponentHandler, "Failed to get uploaded file: %v", err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "No file uploaded or invalid form data",
+		})
+		return
+	}
+	defer file.Close()
+
+	// Get form values
+	hashtabPath := r.FormValue("hashtab_path")
+	treePath := r.FormValue("tree_path")
+	workersStr := r.FormValue("workers")
+
+	if hashtabPath == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "hashtab_path is required",
+		})
+		return
+	}
+
+	if treePath == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "tree_path is required",
+		})
+		return
+	}
+
+	workers := 4
+	if workersStr != "" {
+		if _, err := fmt.Sscanf(workersStr, "%d", &workers); err != nil || workers < 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error": "workers must be a positive integer",
+			})
+			return
+		}
+	}
+
+	logging.Info(logging.ComponentHandler, "Received tree validation request: %s, hashtab=%s, tree=%s, workers=%d",
+		header.Filename, hashtabPath, treePath, workers)
+
+	// Save QMD file to temporary location
+	qmdPath, err := qmldiff.SaveUploadedFile(file, header.Filename)
+	if err != nil {
+		logging.Error(logging.ComponentHandler, "Failed to save uploaded file: %v", err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "Failed to save uploaded file",
+		})
+		return
+	}
+
+	jobID := uuid.New().String()
+	h.jobStore.Create(jobID)
+	logging.Info(logging.ComponentHandler, "Created tree validation job %s for file %s", jobID, header.Filename)
+
+	// Run validation in background
+	go func() {
+		defer os.RemoveAll(filepath.Dir(qmdPath))
+
+		logging.Info(logging.ComponentHandler, "Starting tree validation for job %s", jobID)
+		h.jobStore.UpdateWithOperation(jobID, "running", "Validating QMD against QML tree", nil, "validating")
+		h.jobStore.UpdateProgress(jobID, 10)
+
+		// Validate using qmldiff service
+		result, err := h.qmldiffService.ValidateAgainstTree(qmdPath, hashtabPath, treePath)
+		if err != nil {
+			logging.Error(logging.ComponentHandler, "Tree validation failed for job %s: %v", jobID, err)
+			h.jobStore.Update(jobID, "error", fmt.Sprintf("Validation failed: %v", err), nil)
+			return
+		}
+
+		response := map[string]interface{}{
+			"files_processed":   result.FilesProcessed,
+			"files_modified":    result.FilesModified,
+			"files_with_errors": result.FilesWithErrors,
+			"has_hash_errors":   result.HasHashErrors,
+			"errors":            result.Errors,
+			"failed_hashes":     result.FailedHashes,
+			"success":           result.FilesWithErrors == 0 && !result.HasHashErrors,
+		}
+
+		logging.Info(logging.ComponentHandler, "Tree validation complete for job %s: %d processed, %d modified, %d errors",
+			jobID, result.FilesProcessed, result.FilesModified, result.FilesWithErrors)
+
+		h.jobStore.SetResults(jobID, response)
+		h.jobStore.Update(jobID, "success", "Validation complete", nil)
+		h.jobStore.UpdateProgress(jobID, 100)
+	}()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{
+		"jobId": jobID,
+	})
 }
