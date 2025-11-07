@@ -21,18 +21,20 @@ import (
 )
 
 type APIHandler struct {
-	qmldiffService *qmldiff.Service
-	hashtabService *hashtab.Service
-	treeService    *qmltree.Service
-	jobStore       *jobs.Store
+	qmldiffService           *qmldiff.Service
+	hashtabService           *hashtab.Service
+	treeService              *qmltree.Service
+	jobStore                 *jobs.Store
+	maxConcurrentValidations int
 }
 
-func NewAPIHandler(qmldiffService *qmldiff.Service, hashtabService *hashtab.Service, treeService *qmltree.Service, jobStore *jobs.Store) *APIHandler {
+func NewAPIHandler(qmldiffService *qmldiff.Service, hashtabService *hashtab.Service, treeService *qmltree.Service, jobStore *jobs.Store, maxConcurrentValidations int) *APIHandler {
 	return &APIHandler{
-		qmldiffService: qmldiffService,
-		hashtabService: hashtabService,
-		treeService:    treeService,
-		jobStore:       jobStore,
+		qmldiffService:           qmldiffService,
+		hashtabService:           hashtabService,
+		treeService:              treeService,
+		jobStore:                 jobStore,
+		maxConcurrentValidations: maxConcurrentValidations,
 	}
 }
 

@@ -82,6 +82,10 @@ func runServe(cmd *cobra.Command, args []string) {
 
 	jobStore := jobs.NewStore()
 
+	// Configure concurrent validations
+	maxConcurrentValidations := config.GetInt("MAX_CONCURRENT_VALIDATIONS", 15)
+	logging.Info(logging.ComponentStartup, "Max concurrent validations: %d", maxConcurrentValidations)
+
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
@@ -90,7 +94,7 @@ func runServe(cmd *cobra.Command, args []string) {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(60 * time.Second))
 
-	apiHandler := handlers.NewAPIHandler(qmldiffService, hashtabService, treeService, jobStore)
+	apiHandler := handlers.NewAPIHandler(qmldiffService, hashtabService, treeService, jobStore, maxConcurrentValidations)
 	r.Route("/api", func(r chi.Router) {
 		r.Post("/compare", apiHandler.Compare)
 		r.Post("/validate/tree", apiHandler.ValidateTree)

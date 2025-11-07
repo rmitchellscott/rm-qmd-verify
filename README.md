@@ -4,10 +4,11 @@ Web application and API for verifying QMD (QML Diff) files against multiple hash
 
 **Features:**
 - Drag-and-drop web interface for QMD file uploads
+- **Tree validation mode** - Apply QMD diffs to full QML trees for accurate validation
 - Parallel verification against all available hashtables
 - Compatibility matrix showing which OS/device combinations are supported
 - REST API for programmatic access
-- [Command-line tool](https://github.com/rmitchellscott/rm-qmd-verify-cli)
+- Command-line tool with tree validation support
 
 ## Quick Start
 
@@ -33,6 +34,16 @@ Access the application at http://localhost:8080
 ./qmdverify
 ./qmdverify serve
 
+# Validate QMD against full QML tree (recommended)
+./qmdverify validate-tree \
+  --qmd patch.qmd \
+  --hashtab ./hashtables/3.22.0.65-rmppm \
+  --tree ./qml-trees/3.22.0.65-rmppm \
+  --workers 4
+
+# JSON output for scripting
+./qmdverify validate-tree --qmd patch.qmd --hashtab ... --tree ... --json
+
 # Sync hashtables from GitHub
 ./qmdverify sync
 ./qmdverify sync --dir ./custom-dir
@@ -52,27 +63,42 @@ Set environment variables in `.env` or pass them directly:
 ```bash
 PORT=8080                     # Server port
 HASHTAB_DIR=./hashtables      # Hashtable directory path
+QML_TREE_DIR=./qml-trees      # QML tree directory path (for tree validation)
 ```
+
+**Tree Validation:**
+Place QML trees in `QML_TREE_DIR` with names matching hashtable names. For example:
+- `qml-trees/3.22.0.65-rmppm/` - Tree for OS 3.22.0.65, device rmppm
+- `qml-trees/3.20.0.52-rm2/` - Tree for OS 3.20.0.52, device rm2
+
+When validating, the system automatically matches hashtables to trees by name. If no tree is found for a hashtable, it gracefully falls back to simplified validation for that specific hashtable.
 
 ## Development
 
 ### Backend
 
-**Prerequisites:** Go 1.23+, Rust/Cargo (for building qmldiff)
+**Prerequisites:**
+- Go 1.23+
+- Rust/Cargo (for building qmldiff static library)
+- GCC or Clang (for CGO)
 
 ```bash
 # Install dependencies
 go mod download
 
-# Build qmldiff from source
-git clone https://github.com/asivery/qmldiff
+# Build qmldiff static library
+git clone --branch collect-hash-errors https://github.com/rmitchellscott/qmldiff
 cd qmldiff
 cargo build --release
-mkdir -p /path/to/rm-qmd-verify/bin
-cp target/release/qmldiff /path/to/rm-qmd-verify/bin/
+cd ..
 
-# Run the server
-go run main.go
+# Copy static library to project
+mkdir -p lib
+cp qmldiff/target/release/libqmldiff.a lib/
+
+# Build and run the server (with CGO enabled)
+CGO_ENABLED=1 go build
+./rm-qmd-verify serve
 ```
 
 ### Frontend
@@ -88,15 +114,52 @@ npm run build        # Production build
 
 ## API Reference
 
+**See [API.md](API.md) for complete API documentation.**
+
+### POST /api/validate/tree
+
+**Recommended:** Validate a QMD file by applying diffs to a full QML tree.
+
+**Request:**
+- Content-Type: `multipart/form-data`
+- Fields:
+  - `file` (QMD file)
+  - `hashtab_path` (path to hashtab file on server)
+  - `tree_path` (path to QML tree directory on server)
+  - `workers` (optional, number of workers, default: 4)
+
+**Response:**
+```json
+{
+  "jobId": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+Poll `/api/results/{jobId}` for completion:
+```json
+{
+  "files_processed": 1,
+  "files_modified": 1,
+  "files_with_errors": 0,
+  "has_hash_errors": false,
+  "errors": [],
+  "success": true
+}
+```
+
 ### POST /api/compare
 
-Upload a QMD file for compatibility verification.
+**Primary endpoint:** Validates a QMD file against all available hashtables.
+
+**Default:** Tree validation - automatically applies diffs to full QML trees for accurate validation
+**Legacy:** Hash-only mode available via `?mode=hash` query parameter
 
 **Request:**
 - Content-Type: `multipart/form-data`
 - Field: `file` (QMD file)
+- Query parameter: `mode` (optional) - `tree` (default) or `hash` (legacy)
 
-**Response:**
+**Response (tree mode):**
 ```json
 {
   "compatible": [
@@ -104,21 +167,21 @@ Upload a QMD file for compatibility verification.
       "hashtable": "3.22.0.64-rmpp",
       "os_version": "3.22.0.64",
       "device": "rmpp",
-      "compatible": true
+      "compatible": true,
+      "validation_mode": "tree",
+      "files_processed": 15,
+      "files_modified": 3,
+      "files_with_errors": 0,
+      "tree_validation_used": true
     }
   ],
-  "incompatible": [
-    {
-      "hashtable": "3.20.0.52-rm2",
-      "os_version": "3.20.0.52",
-      "device": "rm2",
-      "compatible": false,
-      "error_detail": "3.20.0.52 (rm2): Cannot resolve hash 1121852971369147487"
-    }
-  ],
-  "total_checked": 2
+  "incompatible": [],
+  "total_checked": 1,
+  "mode": "tree"
 }
 ```
+
+Trees are automatically matched to hashtables by name. If no tree is available for a hashtable, it gracefully falls back to simplified validation for that specific hashtable.
 
 ### GET /api/hashtables
 
@@ -209,9 +272,10 @@ docker run -d -p 8080:8080 \
 
 ## Architecture
 
-- **Backend:** Go with Chi router
+- **Backend:** Go with Chi router + CGO
 - **Frontend:** React + TypeScript + Vite + shadcn/ui
-- **QMLDiff:** Integration via [qmldiff](https://github.com/asivery/qmldiff) binary
+- **QMLDiff:** Integration via [qmldiff](https://github.com/rmitchellscott/qmldiff) static library (Rust + C FFI)
+- **Validation:** Worker pool parallelization for efficient tree validation
 
 ## License
 

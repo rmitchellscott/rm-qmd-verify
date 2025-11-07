@@ -158,7 +158,9 @@ export function CompatibilityMatrix({ results }: CompatibilityMatrixProps) {
           </Tooltip>
           <PopoverContent>
             <div className="text-sm">
-              <div className="mb-2 font-semibold">Missing {result.missing_hashes && result.missing_hashes.length > 1 ? 'Hashes' : 'Hash'}</div>
+              {result.missing_hashes && result.missing_hashes.length > 0 && (
+                <div className="mb-2 font-semibold">Missing {result.missing_hashes.length > 1 ? 'Hashes' : 'Hash'}</div>
+              )}
               {result.missing_hashes && (() => {
                 const maxPositionWidth = Math.max(...result.missing_hashes.map(h =>
                   `L${h.line}:C${h.column}`.length
@@ -173,7 +175,7 @@ export function CompatibilityMatrix({ results }: CompatibilityMatrixProps) {
                 });
               })()}
               {(!result.missing_hashes || result.missing_hashes.length === 0) && (
-                <div className="font-mono">Unknown</div>
+                <div className="font-bold">{result.error_detail || 'Unknown'}</div>
               )}
             </div>
           </PopoverContent>

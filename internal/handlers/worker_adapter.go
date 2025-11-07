@@ -3,14 +3,18 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
+	"sync"
 
 	"github.com/rmitchellscott/rm-qmd-verify/internal/jobs"
 	"github.com/rmitchellscott/rm-qmd-verify/internal/logging"
+	"github.com/rmitchellscott/rm-qmd-verify/internal/qmd"
 	"github.com/rmitchellscott/rm-qmd-verify/internal/qmldiff"
 	"github.com/rmitchellscott/rm-qmd-verify/pkg/qmltree"
 )
 
-// validateAgainstAllTreesWithWorkers uses the qmldiff CLI binary to validate QMD files
+// validateAgainstAllTreesWithWorkers uses the qmldiff CLI binary to validate QMD files in parallel
 func (h *APIHandler) validateAgainstAllTreesWithWorkers(
 	ctx context.Context,
 	qmdPaths []string,
@@ -34,61 +38,77 @@ func (h *APIHandler) validateAgainstAllTreesWithWorkers(
 		resultsMap[filename] = make([]qmldiff.TreeComparisonResult, 0)
 	}
 
-	totalComparisons := len(hashtables) * len(trees)
+	totalComparisons := len(hashtables)
 	completedComparisons := 0
 
-	// Group hashtables by version for sequential processing
-	hashtablesByVersion := make(map[string][]string)
+	// Mutex for thread-safe access to shared state
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	// Semaphore to limit concurrent validations
+	semaphore := make(chan struct{}, h.maxConcurrentValidations)
+
+	logging.Info(logging.ComponentHandler, "Starting parallel validation with max concurrency: %d", h.maxConcurrentValidations)
+
+	// Process each hashtable in parallel
 	for _, ht := range hashtables {
-		version := ht.OSVersion
-		hashtablesByVersion[version] = append(hashtablesByVersion[version], ht.Name)
-	}
-
-	// Process each hashtable version sequentially
-	for version, htNames := range hashtablesByVersion {
-		for _, htName := range htNames {
-			ht := h.hashtabService.GetHashtable(htName)
-			if ht == nil {
-				logging.Warn(logging.ComponentHandler, "Hashtable %s not found, skipping", htName)
-				continue
+		// Find matching tree
+		var matchingTree *qmltree.Tree
+		for i := range trees {
+			if trees[i].OSVersion == ht.OSVersion && trees[i].Device == ht.Device {
+				matchingTree = trees[i]
+				break
 			}
+		}
 
-			// Find matching tree
-			var matchingTree *qmltree.Tree
-			for i := range trees {
-				if trees[i].OSVersion == version {
-					matchingTree = trees[i]
-					break
-				}
+		if matchingTree == nil {
+			logging.Warn(logging.ComponentHandler, "No tree found for hashtable %s (version %s, device %s), skipping", ht.Name, ht.OSVersion, ht.Device)
+			mu.Lock()
+			completedComparisons++
+			if jobStore != nil {
+				progress := int((float64(completedComparisons) / float64(totalComparisons)) * 100)
+				jobStore.UpdateProgress(jobID, progress)
 			}
+			mu.Unlock()
+			continue
+		}
 
-			if matchingTree == nil {
-				logging.Warn(logging.ComponentHandler, "No tree found for hashtable %s (version %s), skipping", htName, version)
-				completedComparisons++
-				continue
-			}
+		wg.Add(1)
+		go func(htName string, htPath string, htOSVersion string, htDevice string, tree *qmltree.Tree) {
+			defer wg.Done()
+
+			// Acquire semaphore slot
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
 
 			logging.Info(logging.ComponentHandler, "Validating %d file(s) against hashtable %s and tree %s",
-				len(qmdPaths), htName, matchingTree.Name)
+				len(qmdPaths), htName, tree.Name)
 
 			// Call qmldiff service directly with CLI binary
 			batchResult, err := h.qmldiffService.ValidateMultipleAgainstTreeSequential(
 				qmdPaths,
-				ht.Path,
-				matchingTree.Path,
+				htPath,
+				tree.Path,
 			)
 
+			mu.Lock()
+			defer mu.Unlock()
+
 			if err != nil {
-				logging.Error(logging.ComponentHandler, "Validation failed for %s/%s: %v", htName, matchingTree.Name, err)
+				logging.Error(logging.ComponentHandler, "Validation failed for %s/%s: %v", htName, tree.Name, err)
 
 				// Add error results for all files
 				for _, filename := range filenames {
+					errorDetail := "QML application failed"
+					if !strings.Contains(err.Error(), "panicked") {
+						errorDetail = fmt.Sprintf("Validation error: %v", err)
+					}
 					resultsMap[filename] = append(resultsMap[filename], qmldiff.TreeComparisonResult{
 						Hashtable:          htName,
-						OSVersion:          ht.OSVersion,
-						Device:             matchingTree.Device,
+						OSVersion:          htOSVersion,
+						Device:             tree.Device,
 						Compatible:         false,
-						ErrorDetail:        fmt.Sprintf("Validation error: %v", err),
+						ErrorDetail:        errorDetail,
 						ValidationMode:     "tree",
 						TreeValidationUsed: true,
 					})
@@ -100,28 +120,47 @@ func (h *APIHandler) validateAgainstAllTreesWithWorkers(
 
 					// Check if this file had an error
 					if fileErr, hasError := batchResult.Errors[qmdPath]; hasError {
+						errorDetail := "QML application failed"
+						if !strings.Contains(fileErr.Error(), "panicked") {
+							errorDetail = fmt.Sprintf("validation error: %v", fileErr)
+						}
 						resultsMap[filename] = append(resultsMap[filename], qmldiff.TreeComparisonResult{
 							Hashtable:          htName,
-							OSVersion:          ht.OSVersion,
-							Device:             matchingTree.Device,
+							OSVersion:          htOSVersion,
+							Device:             tree.Device,
 							Compatible:         false,
-							ErrorDetail:        fmt.Sprintf("validation error: %v", fileErr),
+							ErrorDetail:        errorDetail,
 							ValidationMode:     "tree",
 							TreeValidationUsed: true,
 						})
 					} else if treeResult, hasResult := batchResult.Results[qmdPath]; hasResult {
 						compatible := treeResult.FilesWithErrors == 0
 						errorDetail := ""
-						if !compatible {
+						var missingHashes []qmd.HashWithPosition
+
+						// Map failed hashes to positions in the QMD file
+						if len(treeResult.FailedHashes) > 0 {
+							qmdContents, err := os.ReadFile(qmdPath)
+							if err != nil {
+								logging.Error(logging.ComponentHandler, "Failed to read QMD file %s: %v", qmdPath, err)
+							} else {
+								qmdStr := string(qmdContents)
+								missingHashes = qmd.FindHashPositions(qmdStr, treeResult.FailedHashes)
+								errorDetail = fmt.Sprintf("missing %d hash(es)", len(missingHashes))
+								logging.Warn(logging.ComponentHandler, "Validation failed for %s on %s: %d missing hashes",
+									filename, htName, len(missingHashes))
+							}
+						} else if !compatible {
 							errorDetail = fmt.Sprintf("%d files with errors", treeResult.FilesWithErrors)
 						}
 
 						resultsMap[filename] = append(resultsMap[filename], qmldiff.TreeComparisonResult{
 							Hashtable:          htName,
-							OSVersion:          ht.OSVersion,
-							Device:             matchingTree.Device,
+							OSVersion:          htOSVersion,
+							Device:             tree.Device,
 							Compatible:         compatible,
 							ErrorDetail:        errorDetail,
+							MissingHashes:      missingHashes,
 							ValidationMode:     "tree",
 							TreeValidationUsed: true,
 							FilesProcessed:     treeResult.FilesProcessed,
@@ -132,8 +171,8 @@ func (h *APIHandler) validateAgainstAllTreesWithWorkers(
 						// No result or error - this shouldn't happen
 						resultsMap[filename] = append(resultsMap[filename], qmldiff.TreeComparisonResult{
 							Hashtable:          htName,
-							OSVersion:          ht.OSVersion,
-							Device:             matchingTree.Device,
+							OSVersion:          htOSVersion,
+							Device:             tree.Device,
 							Compatible:         false,
 							ErrorDetail:        "no validation result received",
 							ValidationMode:     "tree",
@@ -148,8 +187,13 @@ func (h *APIHandler) validateAgainstAllTreesWithWorkers(
 				progress := int((float64(completedComparisons) / float64(totalComparisons)) * 100)
 				jobStore.UpdateProgress(jobID, progress)
 			}
-		}
+		}(ht.Name, ht.Path, ht.OSVersion, ht.Device, matchingTree)
 	}
+
+	// Wait for all validations to complete
+	wg.Wait()
+
+	logging.Info(logging.ComponentHandler, "Parallel validation complete: %d hashtables processed", completedComparisons)
 
 	return resultsMap, nil
 }
