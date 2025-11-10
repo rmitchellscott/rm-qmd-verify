@@ -29,7 +29,6 @@ function HomePage() {
   const [fileResults, setFileResults] = useState<Map<string, CompareResponse>>(new Map())
   const [selectedFileForModal, setSelectedFileForModal] = useState<string | null>(null)
   const [isProcessing, setIsProcessing] = useState(false)
-  const [shouldNavigateToResults, setShouldNavigateToResults] = useState(false)
   const [versionInfo, setVersionInfo] = useState<{ version: string } | null>(null)
 
   useEffect(() => {
@@ -74,16 +73,19 @@ function HomePage() {
       return status && (status.status === 'success' || status.status === 'error')
     })
 
-    if (shouldNavigateToResults && !isProcessing && allFilesProcessed && files.length > 1) {
+    if (!isProcessing && allFilesProcessed && files.length > 1) {
+      // Pass all filenames from results (includes dependencies)
+      const allFilenames = Array.from(fileResults.keys())
+      console.log('Navigating to results with filenames:', allFilenames)
+
       navigate('/results', {
         state: {
           results: Object.fromEntries(fileResults),
-          filenames: files.map(f => f.name)
+          filenames: allFilenames
         }
       })
-      setShouldNavigateToResults(false)
     }
-  }, [shouldNavigateToResults, isProcessing, fileStatuses, fileResults, files, navigate])
+  }, [isProcessing, fileStatuses, fileResults, files, navigate])
 
   const handleFilesSelected = (selectedFiles: File[]) => {
     setFiles(selectedFiles)
@@ -148,7 +150,9 @@ function HomePage() {
 
       const formData = new FormData()
       files.forEach(file => {
+        console.log('Uploading file:', file.name)  // DEBUG
         formData.append('files', file)
+        formData.append('paths', file.name)  // Send path separately to bypass browser sanitization
       })
 
       xhr.open('POST', '/api/compare')
@@ -160,7 +164,6 @@ function HomePage() {
     if (files.length === 0) return
 
     setIsProcessing(true)
-    setShouldNavigateToResults(false)
 
     try {
       // Set all files to uploading state
@@ -219,15 +222,22 @@ function HomePage() {
         const resultsMap: Record<string, CompareResponse> = batchResults
         const newResults = new Map(fileResults)
 
+        console.log('Backend returned results for files:', Object.keys(resultsMap))
+        console.log('Frontend has files:', files.map(f => f.name))
+
+        // Process ALL files from backend response (includes dependencies)
+        Object.entries(resultsMap).forEach(([filename, results]) => {
+          newResults.set(filename, results)
+          updateFileStatus(filename, {
+            status: 'success',
+            progress: 100,
+            message: 'Complete'
+          })
+        })
+
+        // Check if any uploaded files didn't get results
         files.forEach(file => {
-          if (resultsMap[file.name]) {
-            newResults.set(file.name, resultsMap[file.name])
-            updateFileStatus(file.name, {
-              status: 'success',
-              progress: 100,
-              message: 'Complete'
-            })
-          } else {
+          if (!resultsMap[file.name]) {
             updateFileStatus(file.name, {
               status: 'error',
               message: 'No results received'
@@ -251,10 +261,6 @@ function HomePage() {
       })
     } finally {
       setIsProcessing(false)
-
-      if (files.length > 1) {
-        setShouldNavigateToResults(true)
-      }
     }
   }
 
@@ -288,9 +294,10 @@ function HomePage() {
     return status && (status.status === 'success' || status.status === 'error')
   })
 
-  const completedFiles = Array.from(fileStatuses.values())
-    .filter(s => s.status === 'success' || s.status === 'error').length
-  const overallProgress = files.length > 0 ? (completedFiles / files.length) * 100 : 0
+  const overallProgress = files.length > 0
+    ? Array.from(fileStatuses.values())
+        .reduce((sum, status) => sum + status.progress, 0) / files.length
+    : 0
 
   return (
     <div className="min-h-screen flex flex-col">

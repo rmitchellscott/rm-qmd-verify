@@ -23,7 +23,7 @@ export function FileComparisonMatrix({ results, filenames, onRowClick }: FileCom
     const fileResults = results.get(filename);
     if (!fileResults) return 'no-data';
 
-    const allResults = [...fileResults.compatible, ...fileResults.incompatible];
+    const allResults = [...(fileResults.compatible || []), ...(fileResults.incompatible || [])];
     const deviceResults = allResults.filter(r => r.device === device);
 
     if (deviceResults.length === 0) return 'no-data';

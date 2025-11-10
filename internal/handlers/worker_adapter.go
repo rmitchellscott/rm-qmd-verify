@@ -161,6 +161,7 @@ func (h *APIHandler) validateAgainstAllTreesWithWorkers(
 							Compatible:         compatible,
 							ErrorDetail:        errorDetail,
 							MissingHashes:      missingHashes,
+							DependencyResults:  treeResult.DependencyResults,
 							ValidationMode:     "tree",
 							TreeValidationUsed: true,
 							FilesProcessed:     treeResult.FilesProcessed,

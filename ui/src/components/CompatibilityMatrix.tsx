@@ -10,6 +10,18 @@ export interface MissingHashInfo {
   column: number;
 }
 
+export interface ValidationResult {
+  path: string;
+  status: 'validated' | 'failed' | 'not_attempted';
+  compatible: boolean;
+  hash_errors?: Array<{
+    hash_id: number;
+    error: string;
+  }>;
+  process_errors?: string[];
+  position?: number;
+}
+
 export interface ComparisonResult {
   hashtable: string;
   os_version: string;
@@ -17,6 +29,7 @@ export interface ComparisonResult {
   compatible: boolean;
   error_detail?: string;
   missing_hashes?: MissingHashInfo[];
+  dependency_results?: Record<string, ValidationResult>;
 }
 
 export interface CompareResponse {

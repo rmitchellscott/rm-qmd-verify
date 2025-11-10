@@ -15,6 +15,7 @@ import (
 
 	"github.com/rmitchellscott/rm-qmd-verify/internal/jobs"
 	"github.com/rmitchellscott/rm-qmd-verify/internal/logging"
+	"github.com/rmitchellscott/rm-qmd-verify/internal/qmd"
 	"github.com/rmitchellscott/rm-qmd-verify/internal/qmldiff"
 	"github.com/rmitchellscott/rm-qmd-verify/pkg/hashtab"
 	"github.com/rmitchellscott/rm-qmd-verify/pkg/qmltree"
@@ -59,10 +60,13 @@ func (h *APIHandler) Compare(w http.ResponseWriter, r *http.Request) {
 
 	// Get all uploaded files
 	var fileHeaders []*multipart.FileHeader
+	var filePaths []string
 
 	// Try batch upload first (new API)
 	if files := r.MultipartForm.File["files"]; len(files) > 0 {
 		fileHeaders = files
+		// Get corresponding paths (sent separately to bypass browser path sanitization)
+		filePaths = r.MultipartForm.Value["paths"]
 	} else {
 		// Try single file upload (backward compatibility)
 		file, header, err := r.FormFile("file")
@@ -77,6 +81,7 @@ func (h *APIHandler) Compare(w http.ResponseWriter, r *http.Request) {
 		}
 		file.Close()
 		fileHeaders = []*multipart.FileHeader{header}
+		filePaths = []string{header.Filename}
 	}
 
 	// Create temp directory for uploaded files
@@ -95,7 +100,7 @@ func (h *APIHandler) Compare(w http.ResponseWriter, r *http.Request) {
 	qmdPaths := make([]string, 0, len(fileHeaders))
 	filenames := make([]string, 0, len(fileHeaders))
 
-	for _, fileHeader := range fileHeaders {
+	for i, fileHeader := range fileHeaders {
 		file, err := fileHeader.Open()
 		if err != nil {
 			logging.Error(logging.ComponentHandler, "Failed to open uploaded file %s: %v", fileHeader.Filename, err)
@@ -108,8 +113,31 @@ func (h *APIHandler) Compare(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Save to temp file
-		tempPath := filepath.Join(tempDir, fileHeader.Filename)
+		// Preserve folder structure by cleaning the path and creating parent directories
+		// Use path from separate field if available (bypasses browser sanitization)
+		var relativePath string
+		if i < len(filePaths) && filePaths[i] != "" {
+			relativePath = filepath.Clean(filePaths[i])
+		} else {
+			relativePath = filepath.Clean(fileHeader.Filename)
+		}
+		logging.Debug(logging.ComponentHandler, "Received file: %s (path field: %s) → cleaned: %s",
+			fileHeader.Filename, filePaths[i], relativePath)
+		tempPath := filepath.Join(tempDir, relativePath)
+
+		// Create parent directories if they don't exist
+		if err := os.MkdirAll(filepath.Dir(tempPath), 0755); err != nil {
+			file.Close()
+			os.RemoveAll(tempDir)
+			logging.Error(logging.ComponentHandler, "Failed to create directory for %s: %v", fileHeader.Filename, err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error": fmt.Sprintf("Failed to create directory for file %s", fileHeader.Filename),
+			})
+			return
+		}
+
 		tempFile, err := os.Create(tempPath)
 		if err != nil {
 			file.Close()
@@ -144,7 +172,7 @@ func (h *APIHandler) Compare(w http.ResponseWriter, r *http.Request) {
 		}
 
 		qmdPaths = append(qmdPaths, tempPath)
-		filenames = append(filenames, fileHeader.Filename)
+		filenames = append(filenames, relativePath)
 	}
 
 	if len(qmdPaths) == 0 {
@@ -158,6 +186,39 @@ func (h *APIHandler) Compare(w http.ResponseWriter, r *http.Request) {
 	}
 
 	logging.Info(logging.ComponentHandler, "Received %d file upload(s): %v", len(filenames), filenames)
+
+	// Filter to root-level QMD files only (mimics qmldiff behavior)
+	rootLevelQMDs := qmd.GetRootLevelFiles(tempDir, qmdPaths)
+	if len(rootLevelQMDs) == 0 {
+		os.RemoveAll(tempDir)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "No root-level .qmd files found. Only files at the top level of the upload are validated.",
+		})
+		return
+	}
+
+	// Update paths and filenames to only include root-level files
+	originalQmdCount := len(qmdPaths)
+	qmdPaths = rootLevelQMDs
+
+	// Extract relative paths for root-level files (preserve directory structure)
+	rootFilenames := make([]string, len(rootLevelQMDs))
+	for i, path := range rootLevelQMDs {
+		relPath, err := filepath.Rel(tempDir, path)
+		if err != nil {
+			rootFilenames[i] = filepath.Base(path)
+		} else {
+			rootFilenames[i] = relPath
+		}
+	}
+	filenames = rootFilenames
+
+	if len(qmdPaths) < originalQmdCount {
+		logging.Info(logging.ComponentHandler, "Filtered to %d root-level QMD files (excluded %d in subdirectories)",
+			len(qmdPaths), originalQmdCount-len(qmdPaths))
+	}
 
 	// Get validation mode from query parameter (default: tree)
 	mode := r.URL.Query().Get("mode")
@@ -185,7 +246,7 @@ func (h *APIHandler) Compare(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// For single file, return flat structure (backward compatibility)
-			if len(filenames) == 1 {
+			if originalQmdCount == 1 {
 				results := resultsMap[filenames[0]]
 				compatible := make([]qmldiff.TreeComparisonResult, 0)
 				incompatible := make([]qmldiff.TreeComparisonResult, 0)
@@ -234,8 +295,71 @@ func (h *APIHandler) Compare(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 
-				logging.Info(logging.ComponentHandler, "Batch tree validation complete for job %s: %d files processed",
-					jobID, len(filenames))
+				// Flatten dependency results into top-level response
+				// For each root file's results, extract dependency results and add them as separate entries
+				for rootFilename, response := range batchResponse {
+					// Check both compatible and incompatible results
+					allResults := append(response.Compatible, response.Incompatible...)
+
+					for _, treeResult := range allResults {
+						if treeResult.DependencyResults != nil && len(treeResult.DependencyResults) > 0 {
+							// For each dependency file in this hashtable's results
+							for depPath, depResult := range treeResult.DependencyResults {
+								// Create a TreeComparisonResult for this dependency
+								depTreeResult := qmldiff.TreeComparisonResult{
+									Hashtable:          treeResult.Hashtable,
+									OSVersion:          treeResult.OSVersion,
+									Device:             treeResult.Device,
+									Compatible:         depResult.Compatible,
+									ValidationMode:     "tree",
+									TreeValidationUsed: true,
+								}
+
+								// Add error details if the dependency failed
+								if !depResult.Compatible {
+									if len(depResult.HashErrors) > 0 {
+										depTreeResult.ErrorDetail = fmt.Sprintf("%d hash lookup errors", len(depResult.HashErrors))
+									} else if len(depResult.ProcessErrors) > 0 {
+										depTreeResult.ErrorDetail = depResult.ProcessErrors[0]
+									} else {
+										depTreeResult.ErrorDetail = fmt.Sprintf("Validation status: %s", depResult.Status)
+									}
+								}
+
+								// Get or create the CompareResponse for this dependency
+								if existingResponse, exists := batchResponse[depPath]; exists {
+									// Append to existing response
+									if depResult.Compatible {
+										existingResponse.Compatible = append(existingResponse.Compatible, depTreeResult)
+									} else {
+										existingResponse.Incompatible = append(existingResponse.Incompatible, depTreeResult)
+									}
+									existingResponse.TotalChecked++
+									batchResponse[depPath] = existingResponse
+								} else {
+									// Create new response for this dependency
+									newResponse := CompareResponse{
+										Mode:         "tree",
+										TotalChecked: 1,
+									}
+									if depResult.Compatible {
+										newResponse.Compatible = []qmldiff.TreeComparisonResult{depTreeResult}
+										newResponse.Incompatible = []qmldiff.TreeComparisonResult{}
+									} else {
+										newResponse.Compatible = []qmldiff.TreeComparisonResult{}
+										newResponse.Incompatible = []qmldiff.TreeComparisonResult{depTreeResult}
+									}
+									batchResponse[depPath] = newResponse
+								}
+							}
+						}
+					}
+
+					logging.Debug(logging.ComponentHandler, "Flattened dependency results for %s", rootFilename)
+				}
+
+				logging.Info(logging.ComponentHandler, "Batch tree validation complete for job %s: %d files processed, %d total results (including dependencies)",
+					jobID, len(filenames), len(batchResponse))
 
 				h.jobStore.SetResults(jobID, batchResponse)
 				h.jobStore.Update(jobID, "success", "Batch validation complete", nil)

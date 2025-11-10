@@ -34,17 +34,18 @@ type ComparisonResult struct {
 }
 
 type TreeComparisonResult struct {
-	Hashtable          string                 `json:"hashtable"`
-	OSVersion          string                 `json:"os_version"`
-	Device             string                 `json:"device"`
-	Compatible         bool                   `json:"compatible"`
-	ErrorDetail        string                 `json:"error_detail,omitempty"`
-	MissingHashes      []qmd.HashWithPosition `json:"-"`
-	ValidationMode     string                 `json:"validation_mode"` // "tree" or "hash"
-	FilesProcessed     int                    `json:"files_processed,omitempty"`
-	FilesModified      int                    `json:"files_modified,omitempty"`
-	FilesWithErrors    int                    `json:"files_with_errors,omitempty"`
-	TreeValidationUsed bool                   `json:"tree_validation_used"`
+	Hashtable          string                           `json:"hashtable"`
+	OSVersion          string                           `json:"os_version"`
+	Device             string                           `json:"device"`
+	Compatible         bool                             `json:"compatible"`
+	ErrorDetail        string                           `json:"error_detail,omitempty"`
+	MissingHashes      []qmd.HashWithPosition           `json:"-"`
+	ValidationMode     string                           `json:"validation_mode"` // "tree" or "hash"
+	FilesProcessed     int                              `json:"files_processed,omitempty"`
+	FilesModified      int                              `json:"files_modified,omitempty"`
+	FilesWithErrors    int                              `json:"files_with_errors,omitempty"`
+	TreeValidationUsed bool                             `json:"tree_validation_used"`
+	DependencyResults  map[string]*qmd.ValidationResult `json:"dependency_results,omitempty"`
 }
 
 func (cr ComparisonResult) MarshalJSON() ([]byte, error) {
