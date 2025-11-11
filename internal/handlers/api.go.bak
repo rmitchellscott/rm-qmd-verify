@@ -408,7 +408,7 @@ func (h *APIHandler) Compare(w http.ResponseWriter, r *http.Request) {
 											logging.Debug(logging.ComponentHandler, "      Final ErrorDetail: '%s'", depTreeResult.ErrorDetail)
 										}
 									} else if len(depResult.ProcessErrors) > 0 {
-													depTreeResult.ErrorDetail = "QML failed to apply"
+										depTreeResult.ErrorDetail = depResult.ProcessErrors[0]
 									} else {
 										depTreeResult.ErrorDetail = fmt.Sprintf("Validation status: %s", depResult.Status)
 									}

@@ -149,7 +149,7 @@ func (h *APIHandler) validateAgainstAllTreesWithWorkers(
 						logging.Debug(logging.ComponentHandler, "  File %s: Has file-level error", filename)
 						errorDetail := "QML application failed"
 						if !strings.Contains(fileErr.Error(), "panicked") {
-						errorDetail = "QML failed to apply"
+							errorDetail = fmt.Sprintf("validation error: %v", fileErr)
 						}
 
 						var depResults map[string]*qmd.ValidationResult
