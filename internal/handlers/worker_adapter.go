@@ -94,47 +94,83 @@ func (h *APIHandler) validateAgainstAllTreesWithWorkers(
 			mu.Lock()
 			defer mu.Unlock()
 
+			logging.Debug(logging.ComponentHandler, "Validation returned for %s: err=%v, hasResults=%v, resultCount=%d",
+				htName, err != nil, batchResult != nil && len(batchResult.Results) > 0,
+				func() int { if batchResult != nil { return len(batchResult.Results) }; return 0 }())
+
 			if err != nil {
 				logging.Error(logging.ComponentHandler, "Validation failed for %s/%s: %v", htName, tree.Name, err)
 
 				// Add error results for all files
-				for _, filename := range filenames {
+				logging.Debug(logging.ComponentHandler, "Taking error path for %s, adding %d file results", htName, len(filenames))
+				for i, filename := range filenames {
 					errorDetail := "QML application failed"
 					if !strings.Contains(err.Error(), "panicked") {
 						errorDetail = fmt.Sprintf("Validation error: %v", err)
 					}
+
+					var depResults map[string]*qmd.ValidationResult
+					if batchResult != nil && len(qmdPaths) > i {
+						qmdPath := qmdPaths[i]
+						if treeResult, hasResult := batchResult.Results[qmdPath]; hasResult {
+							depResults = treeResult.DependencyResults
+							logging.Debug(logging.ComponentHandler, "  File %s: Found %d dependencies in error results", filename, len(depResults))
+						}
+					}
+
 					resultsMap[filename] = append(resultsMap[filename], qmldiff.TreeComparisonResult{
 						Hashtable:          htName,
 						OSVersion:          htOSVersion,
 						Device:             tree.Device,
 						Compatible:         false,
 						ErrorDetail:        errorDetail,
+						DependencyResults:  depResults,
 						ValidationMode:     "tree",
 						TreeValidationUsed: true,
 					})
 				}
 			} else {
 				// Process results for each file
+				logging.Debug(logging.ComponentHandler, "Taking success path for %s, processing %d files", htName, len(qmdPaths))
+
+				// Debug: log all keys in batchResult.Results
+				resultKeys := make([]string, 0, len(batchResult.Results))
+				for key := range batchResult.Results {
+					resultKeys = append(resultKeys, key)
+				}
+				logging.Debug(logging.ComponentHandler, "  batchResult.Results keys: %v", resultKeys)
+
 				for i, qmdPath := range qmdPaths {
 					filename := filenames[i]
+					logging.Debug(logging.ComponentHandler, "  Looking for qmdPath='%s' in results", qmdPath)
 
 					// Check if this file had an error
 					if fileErr, hasError := batchResult.Errors[qmdPath]; hasError {
+						logging.Debug(logging.ComponentHandler, "  File %s: Has file-level error", filename)
 						errorDetail := "QML application failed"
 						if !strings.Contains(fileErr.Error(), "panicked") {
 							errorDetail = fmt.Sprintf("validation error: %v", fileErr)
 						}
+
+						var depResults map[string]*qmd.ValidationResult
+						if treeResult, hasResult := batchResult.Results[qmdPath]; hasResult {
+							depResults = treeResult.DependencyResults
+						}
+
 						resultsMap[filename] = append(resultsMap[filename], qmldiff.TreeComparisonResult{
 							Hashtable:          htName,
 							OSVersion:          htOSVersion,
 							Device:             tree.Device,
 							Compatible:         false,
 							ErrorDetail:        errorDetail,
+							DependencyResults:  depResults,
 							ValidationMode:     "tree",
 							TreeValidationUsed: true,
 						})
 					} else if treeResult, hasResult := batchResult.Results[qmdPath]; hasResult {
-						compatible := treeResult.FilesWithErrors == 0
+						compatible := treeResult.FilesWithErrors == 0 && !treeResult.HasHashErrors
+						logging.Debug(logging.ComponentHandler, "  File %s: Has result, compatible=%v, depCount=%d",
+							filename, compatible, len(treeResult.DependencyResults))
 						errorDetail := ""
 						var missingHashes []qmd.HashWithPosition
 
@@ -151,7 +187,12 @@ func (h *APIHandler) validateAgainstAllTreesWithWorkers(
 									filename, htName, len(missingHashes))
 							}
 						} else if !compatible {
-							errorDetail = fmt.Sprintf("%d files with errors", treeResult.FilesWithErrors)
+							// Errors are in dependency files, not the root file
+							if treeResult.FilesWithErrors == 1 {
+								errorDetail = "1 dependency file has errors"
+							} else {
+								errorDetail = fmt.Sprintf("%d dependency files have errors", treeResult.FilesWithErrors)
+							}
 						}
 
 						resultsMap[filename] = append(resultsMap[filename], qmldiff.TreeComparisonResult{
@@ -168,8 +209,11 @@ func (h *APIHandler) validateAgainstAllTreesWithWorkers(
 							FilesModified:      treeResult.FilesModified,
 							FilesWithErrors:    treeResult.FilesWithErrors,
 						})
+						logging.Debug(logging.ComponentHandler, "  Added result to resultsMap[%s]: %s (compatible=%v, depCount=%d)",
+							filename, htName, compatible, len(treeResult.DependencyResults))
 					} else {
 						// No result or error - this shouldn't happen
+						logging.Warn(logging.ComponentHandler, "  File %s: No result or error received from validation!", filename)
 						resultsMap[filename] = append(resultsMap[filename], qmldiff.TreeComparisonResult{
 							Hashtable:          htName,
 							OSVersion:          htOSVersion,

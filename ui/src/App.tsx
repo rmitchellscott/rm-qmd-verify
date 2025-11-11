@@ -13,6 +13,9 @@ import { FileList } from '@/components/FileList'
 import { CompatibilityMatrix, type CompareResponse } from '@/components/CompatibilityMatrix'
 import { FileDetailModal } from '@/components/FileDetailModal'
 import { ComparisonResultsPage } from '@/components/ComparisonResultsPage'
+import { DeviceSelector } from '@/components/DeviceSelector'
+import { VersionRangeSlider } from '@/components/VersionRangeSlider'
+import { useFilterPreferences } from '@/hooks/useFilterPreferences'
 import { waitForJobWS } from '@/lib/websocket'
 import type { JobStatus } from '@/lib/websocket'
 
@@ -30,6 +33,8 @@ function HomePage() {
   const [selectedFileForModal, setSelectedFileForModal] = useState<string | null>(null)
   const [isProcessing, setIsProcessing] = useState(false)
   const [versionInfo, setVersionInfo] = useState<{ version: string } | null>(null)
+  const [availableVersions, setAvailableVersions] = useState<string[]>([])
+  const { preferences, setSelectedDevices, setVersionRange } = useFilterPreferences()
 
   useEffect(() => {
     const fetchVersionInfo = async () => {
@@ -46,10 +51,15 @@ function HomePage() {
 
     const refreshHashtables = async () => {
       try {
-        // Trigger hashtable check/reload on page load
-        await fetch('/api/hashtables')
+        const response = await fetch('/api/validated-versions')
+        if (response.ok) {
+          const data = await response.json()
+          if (data.versions && Array.isArray(data.versions)) {
+            setAvailableVersions(data.versions.sort())
+          }
+        }
       } catch (error) {
-        console.error('Failed to refresh hashtables:', error)
+        console.error('Failed to refresh validated versions:', error)
       }
     }
 
@@ -312,6 +322,21 @@ function HomePage() {
               <CardTitle>Verify QMD Files</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
+              <div className="@container space-y-4 p-4 border rounded-lg bg-muted/50">
+                <DeviceSelector
+                  selectedDevices={preferences.selectedDevices}
+                  onChange={setSelectedDevices}
+                />
+                {availableVersions.length > 0 && (
+                  <VersionRangeSlider
+                    availableVersions={availableVersions}
+                    minVersion={preferences.minVersion}
+                    maxVersion={preferences.maxVersion}
+                    onChange={setVersionRange}
+                  />
+                )}
+              </div>
+
               <FileDropzone
                 onFileSelected={(file) => handleFilesSelected([file])}
                 onFilesSelected={handleFilesSelected}
@@ -369,6 +394,9 @@ function HomePage() {
               <CardContent>
                 <CompatibilityMatrix
                   results={fileResults.get(files[0].name)!}
+                  filterDevices={preferences.selectedDevices}
+                  filterMinVersion={preferences.minVersion}
+                  filterMaxVersion={preferences.maxVersion}
                 />
               </CardContent>
             </Card>

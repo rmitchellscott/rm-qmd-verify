@@ -56,8 +56,9 @@ func ParseQmdiffOutput(output string) *ParsedOutput {
 	}
 
 	// Regex patterns
-	// Hash error: "file.qmd - Cannot resolve hash 123"
-	hashErrorRegex := regexp.MustCompile(`(.+\.qmd) - Cannot resolve hash (\d+)`)
+	// Hash error: "/path/to/file.qmd - Cannot resolve hash 123"
+	// Also supports old format: "Cannot resolve hash 123 required by file.qmd"
+	hashErrorRegex := regexp.MustCompile(`(?:(.+\.qmd) - Cannot resolve hash (\d+)|Cannot resolve hash (\d+) required by (.+\.qmd))`)
 
 	// Process error: "(On behalf of 'file.qmd'): error message"
 	processErrorRegex := regexp.MustCompile(`\(On behalf of '(.+\.qmd)'\): (.+)`)
@@ -89,9 +90,23 @@ func ParseQmdiffOutput(output string) *ParsedOutput {
 		line = strings.TrimSpace(line)
 
 		// Check for hash errors
-		if matches := hashErrorRegex.FindStringSubmatch(line); len(matches) == 3 {
-			qmdFile := matches[1]
-			hashID, _ := strconv.ParseUint(matches[2], 10, 64)
+		// Regex groups: 1=file(new), 2=hash(new), 3=hash(old), 4=file(old)
+		if matches := hashErrorRegex.FindStringSubmatch(line); len(matches) == 5 {
+			var hashID uint64
+			var qmdFile string
+
+			// Check which format matched
+			if matches[1] != "" && matches[2] != "" {
+				// New format: "/path/file.qmd - Cannot resolve hash 123"
+				qmdFile = matches[1]
+				hashID, _ = strconv.ParseUint(matches[2], 10, 64)
+			} else if matches[3] != "" && matches[4] != "" {
+				// Old format: "Cannot resolve hash 123 required by file.qmd"
+				hashID, _ = strconv.ParseUint(matches[3], 10, 64)
+				qmdFile = matches[4]
+			} else {
+				continue // Shouldn't happen, but skip if neither format matched
+			}
 
 			result.HashErrors[qmdFile] = append(result.HashErrors[qmdFile], HashError{
 				HashID: hashID,
@@ -146,39 +161,101 @@ func ReconcileResults(depInfo *DependencyInfo, parsedOutput *ParsedOutput) map[s
 		Position:   -1, // Root file is position -1
 	}
 
-	// If qmldiff panicked, mark root as failed and all dependencies as not_attempted
+	// If qmldiff panicked, check if we have parseable hash errors
+	// If we have hash errors, process them normally; otherwise treat as fatal panic
 	if parsedOutput.HadPanic {
-		rootResult.Status = StatusFailed
-		rootResult.Compatible = false
-		rootResult.ProcessErrors = append(rootResult.ProcessErrors, "qmldiff panicked: "+parsedOutput.PanicMessage)
-		rootFileName := filepath.Base(depInfo.RootFile)
-		results[rootFileName] = rootResult
+		hasHashErrors := len(parsedOutput.HashErrors) > 0
 
-		// Mark all expected loads as not_attempted
-		for i, expectedFile := range depInfo.ExpectedLoads {
-			results[expectedFile] = &ValidationResult{
-				Path:       expectedFile,
-				Position:   i,
-				Status:     StatusNotAttempted,
-				Compatible: false,
+		if !hasHashErrors {
+			// Fatal panic with no parseable hash errors - bail out
+			rootResult.Status = StatusFailed
+			rootResult.Compatible = false
+			rootResult.ProcessErrors = append(rootResult.ProcessErrors, "qmldiff panicked: "+parsedOutput.PanicMessage)
+			rootFileName := filepath.Base(depInfo.RootFile)
+			results[rootFileName] = rootResult
+
+			// Mark all expected loads as not_attempted
+			for i, expectedFile := range depInfo.ExpectedLoads {
+				results[expectedFile] = &ValidationResult{
+					Path:       expectedFile,
+					Position:   i,
+					Status:     StatusNotAttempted,
+					Compatible: false,
+				}
 			}
+
+			logging.Info(logging.ComponentQMD, "Reconciled results: %d files total, all not_attempted due to fatal panic", len(results))
+			return results
 		}
 
-		logging.Info(logging.ComponentQMD, "Reconciled results: %d files total, all not_attempted due to panic", len(results))
-		return results
+		// Has hash errors from panic - continue processing them normally
+		logging.Debug(logging.ComponentQMD, "Panic occurred but hash errors were collected, continuing with normal processing")
 	}
 
-	// Check if root file had errors
+	// Debug: Log path matching details for root file
+	logging.Debug(logging.ComponentQMD, "=== Root File Path Matching ===")
+	logging.Debug(logging.ComponentQMD, "  depInfo.RootFile (looking for): '%s'", depInfo.RootFile)
+	logging.Debug(logging.ComponentQMD, "  depInfo.RootFile basename: '%s'", filepath.Base(depInfo.RootFile))
+
+	// Log all error paths
+	errorPaths := make([]string, 0, len(parsedOutput.HashErrors))
+	for path := range parsedOutput.HashErrors {
+		errorPaths = append(errorPaths, path)
+	}
+	logging.Debug(logging.ComponentQMD, "  parsedOutput.HashErrors keys (%d): %v", len(errorPaths), errorPaths)
+
+	processErrorPaths := make([]string, 0, len(parsedOutput.ProcessErrors))
+	for path := range parsedOutput.ProcessErrors {
+		processErrorPaths = append(processErrorPaths, path)
+	}
+	logging.Debug(logging.ComponentQMD, "  parsedOutput.ProcessErrors keys (%d): %v", len(processErrorPaths), processErrorPaths)
+
+	// Check if root file had errors - try multiple path variations
+	// Try exact match with absolute path
 	if hashErrs, exists := parsedOutput.HashErrors[depInfo.RootFile]; exists {
-		rootResult.HashErrors = hashErrs
+		logging.Debug(logging.ComponentQMD, "  ✓ Found via exact match (absolute path): %d hash errors", len(hashErrs))
+		rootResult.HashErrors = append(rootResult.HashErrors, hashErrs...)
 		rootResult.Compatible = false
 		rootResult.Status = StatusFailed
 	}
+
+	// Try basename match
+	rootBasename := filepath.Base(depInfo.RootFile)
+	if hashErrs, exists := parsedOutput.HashErrors[rootBasename]; exists {
+		logging.Debug(logging.ComponentQMD, "  ✓ Found via basename match: %d hash errors", len(hashErrs))
+		rootResult.HashErrors = append(rootResult.HashErrors, hashErrs...)
+		rootResult.Compatible = false
+		rootResult.Status = StatusFailed
+	}
+
+	// Try suffix match as fallback (only if no errors found yet)
+	if len(rootResult.HashErrors) == 0 {
+		for errorPath, hashErrs := range parsedOutput.HashErrors {
+			if strings.HasSuffix(errorPath, rootBasename) {
+				logging.Debug(logging.ComponentQMD, "  ✓ Found via suffix match: '%s' matches '%s', %d hash errors", errorPath, rootBasename, len(hashErrs))
+				rootResult.HashErrors = append(rootResult.HashErrors, hashErrs...)
+				rootResult.Compatible = false
+				rootResult.Status = StatusFailed
+				break
+			}
+		}
+	}
+
+	// Process errors - try multiple path variations
 	if procErrs, exists := parsedOutput.ProcessErrors[depInfo.RootFile]; exists {
-		rootResult.ProcessErrors = procErrs
+		rootResult.ProcessErrors = append(rootResult.ProcessErrors, procErrs...)
 		rootResult.Compatible = false
 		rootResult.Status = StatusFailed
 	}
+	if procErrs, exists := parsedOutput.ProcessErrors[rootBasename]; exists {
+		rootResult.ProcessErrors = append(rootResult.ProcessErrors, procErrs...)
+		rootResult.Compatible = false
+		rootResult.Status = StatusFailed
+	}
+
+	// Log final root file result
+	logging.Debug(logging.ComponentQMD, "  Final root result: Compatible=%v, Status=%s, HashErrors=%d, ProcessErrors=%d",
+		rootResult.Compatible, rootResult.Status, len(rootResult.HashErrors), len(rootResult.ProcessErrors))
 
 	rootFileName := filepath.Base(depInfo.RootFile)
 	results[rootFileName] = rootResult
@@ -221,14 +298,29 @@ func ReconcileResults(depInfo *DependencyInfo, parsedOutput *ParsedOutput) map[s
 			result.ProcessErrors = append(result.ProcessErrors, "LOAD failed: Cannot read file")
 			logging.Debug(logging.ComponentQMD, "File caused failure: %s", expectedFile)
 		} else if wasProcessed {
-			// Check for errors
+			// Check for errors - try multiple path variations
+			// Try exact match with expected file (relative path)
 			if hashErrs, exists := parsedOutput.HashErrors[expectedFile]; exists {
 				result.HashErrors = hashErrs
 				result.Compatible = false
 			}
+
+			// Try exact match with resolved path (absolute path)
 			if hashErrs, exists := parsedOutput.HashErrors[resolvedPath]; exists {
 				result.HashErrors = append(result.HashErrors, hashErrs...)
 				result.Compatible = false
+			}
+
+			// If not found yet, try matching by suffix (fallback)
+			if len(result.HashErrors) == 0 {
+				for errorPath, hashErrs := range parsedOutput.HashErrors {
+					// Check if the error path ends with the expected file path
+					if strings.HasSuffix(errorPath, expectedFile) {
+						result.HashErrors = append(result.HashErrors, hashErrs...)
+						result.Compatible = false
+						break
+					}
+				}
 			}
 
 			if procErrs, exists := parsedOutput.ProcessErrors[expectedFile]; exists {

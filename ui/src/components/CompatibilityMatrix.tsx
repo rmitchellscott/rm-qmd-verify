@@ -81,9 +81,17 @@ function compareVersions(a: string, b: string): number {
 
 interface CompatibilityMatrixProps {
   results: CompareResponse;
+  filterDevices?: string[];
+  filterMinVersion?: string | null;
+  filterMaxVersion?: string | null;
 }
 
-export function CompatibilityMatrix({ results }: CompatibilityMatrixProps) {
+export function CompatibilityMatrix({
+  results,
+  filterDevices = ['rm1', 'rm2', 'rmpp', 'rmppm'],
+  filterMinVersion = null,
+  filterMaxVersion = null
+}: CompatibilityMatrixProps) {
   const [expandedVersions, setExpandedVersions] = useState<Set<string>>(new Set());
 
   const toggleVersionExpansion = (majorMinorPatch: string) => {
@@ -98,9 +106,46 @@ export function CompatibilityMatrix({ results }: CompatibilityMatrixProps) {
     });
   };
 
+  const isVersionInRange = (version: string, min: string | null, max: string | null): boolean => {
+    const versionParts = parseVersion(version).parts;
+
+    if (min) {
+      const minParts = parseVersion(min).parts;
+      for (let i = 0; i < Math.max(versionParts.length, minParts.length); i++) {
+        const vVal = versionParts[i] || 0;
+        const minVal = minParts[i] || 0;
+        if (vVal < minVal) return false;
+        if (vVal > minVal) break;
+      }
+    }
+
+    if (max) {
+      const maxParts = parseVersion(max).parts;
+      for (let i = 0; i < Math.max(versionParts.length, maxParts.length); i++) {
+        const vVal = versionParts[i] || 0;
+        const maxVal = maxParts[i] || 0;
+        if (vVal > maxVal) return false;
+        if (vVal < maxVal) break;
+      }
+    }
+
+    return true;
+  };
+
   const buildCompatibilityMatrix = () => {
-    const allResults = [...results.compatible, ...results.incompatible];
-    const deviceKeys = ['rm1', 'rm2', 'rmpp', 'rmppm'];
+    let allResults = [...results.compatible, ...results.incompatible];
+
+    if (filterMinVersion || filterMaxVersion) {
+      allResults = allResults.filter(result =>
+        isVersionInRange(result.os_version, filterMinVersion, filterMaxVersion)
+      );
+    }
+
+    if (filterDevices.length < 4) {
+      allResults = allResults.filter(result => filterDevices.includes(result.device));
+    }
+
+    const deviceKeys = ['rm1', 'rm2', 'rmpp', 'rmppm'].filter(d => filterDevices.includes(d));
 
     const matrix: Record<string, Record<string, ComparisonResult | null>> = {};
     allResults.forEach(result => {

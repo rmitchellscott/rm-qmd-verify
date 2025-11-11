@@ -10,26 +10,70 @@ const deviceNames: Record<string, { short: string; full: string }> = {
   'rmppm': { short: 'rMPPM', full: 'Paper Pro Move' },
 };
 
+function parseVersion(version: string): number[] {
+  return version.split('.').map(Number);
+}
+
+function isVersionInRange(version: string, min: string | null, max: string | null): boolean {
+  const versionParts = parseVersion(version);
+
+  if (min) {
+    const minParts = parseVersion(min);
+    for (let i = 0; i < Math.max(versionParts.length, minParts.length); i++) {
+      const vVal = versionParts[i] || 0;
+      const minVal = minParts[i] || 0;
+      if (vVal < minVal) return false;
+      if (vVal > minVal) break;
+    }
+  }
+
+  if (max) {
+    const maxParts = parseVersion(max);
+    for (let i = 0; i < Math.max(versionParts.length, maxParts.length); i++) {
+      const vVal = versionParts[i] || 0;
+      const maxVal = maxParts[i] || 0;
+      if (vVal > maxVal) return false;
+      if (vVal < maxVal) break;
+    }
+  }
+
+  return true;
+}
+
 interface FileComparisonMatrixProps {
   results: Map<string, CompareResponse>;
   filenames: string[];
   onRowClick: (filename: string) => void;
+  filterDevices?: string[];
+  filterMinVersion?: string | null;
+  filterMaxVersion?: string | null;
 }
 
-export function FileComparisonMatrix({ results, filenames, onRowClick }: FileComparisonMatrixProps) {
-  const deviceKeys = ['rm1', 'rm2', 'rmpp', 'rmppm'];
+export function FileComparisonMatrix({
+  results,
+  filenames,
+  onRowClick,
+  filterDevices = ['rm1', 'rm2', 'rmpp', 'rmppm'],
+  filterMinVersion = null,
+  filterMaxVersion = null
+}: FileComparisonMatrixProps) {
+  const deviceKeys = ['rm1', 'rm2', 'rmpp', 'rmppm'].filter(d => filterDevices.includes(d));
 
   const aggregateFileDeviceResults = (filename: string, device: string): 'all-compatible' | 'all-incompatible' | 'mixed' | 'no-data' => {
     const fileResults = results.get(filename);
     if (!fileResults) return 'no-data';
 
-    const allResults = [...(fileResults.compatible || []), ...(fileResults.incompatible || [])];
-    const deviceResults = allResults.filter(r => r.device === device);
+    let allResults = [...(fileResults.compatible || []), ...(fileResults.incompatible || [])];
 
-    if (deviceResults.length === 0) return 'no-data';
+    allResults = allResults.filter(r =>
+      r.device === device &&
+      isVersionInRange(r.os_version, filterMinVersion, filterMaxVersion)
+    );
 
-    const hasCompatible = deviceResults.some(r => r.compatible);
-    const hasIncompatible = deviceResults.some(r => !r.compatible);
+    if (allResults.length === 0) return 'no-data';
+
+    const hasCompatible = allResults.some(r => r.compatible);
+    const hasIncompatible = allResults.some(r => !r.compatible);
 
     if (hasCompatible && hasIncompatible) return 'mixed';
     if (hasCompatible) return 'all-compatible';

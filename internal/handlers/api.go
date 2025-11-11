@@ -295,16 +295,59 @@ func (h *APIHandler) Compare(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 
+				// Create filename -> qmdPath map for resolving dependency paths
+				filenameToPaths := make(map[string]string)
+				for i, filename := range filenames {
+					filenameToPaths[filename] = qmdPaths[i]
+				}
+
 				// Flatten dependency results into top-level response
 				// For each root file's results, extract dependency results and add them as separate entries
+				logging.Debug(logging.ComponentHandler, "Starting dependency flattening for %d root files", len(batchResponse))
 				for rootFilename, response := range batchResponse {
 					// Check both compatible and incompatible results
-					allResults := append(response.Compatible, response.Incompatible...)
+					// Create fresh slice to avoid underlying array sharing issues
+					allResults := make([]qmldiff.TreeComparisonResult, 0, len(response.Compatible)+len(response.Incompatible))
+					allResults = append(allResults, response.Compatible...)
+					allResults = append(allResults, response.Incompatible...)
+					logging.Debug(logging.ComponentHandler, "Processing root file '%s' with %d total results (%d compatible, %d incompatible)",
+						rootFilename, len(allResults), len(response.Compatible), len(response.Incompatible))
 
-					for _, treeResult := range allResults {
+					// Debug: log hashtables in each category
+					compatibleNames := make([]string, len(response.Compatible))
+					for i, r := range response.Compatible {
+						compatibleNames[i] = r.Hashtable
+					}
+					incompatibleNames := make([]string, len(response.Incompatible))
+					for i, r := range response.Incompatible {
+						incompatibleNames[i] = r.Hashtable
+					}
+					logging.Debug(logging.ComponentHandler, "  Compatible: %v", compatibleNames)
+					logging.Debug(logging.ComponentHandler, "  Incompatible: %v", incompatibleNames)
+
+					// Debug: log what's actually in allResults
+					allResultsNames := make([]string, len(allResults))
+					for i, r := range allResults {
+						allResultsNames[i] = r.Hashtable
+					}
+					logging.Debug(logging.ComponentHandler, "  allResults after append: %v", allResultsNames)
+
+					logging.Debug(logging.ComponentHandler, "  About to iterate over %d results in allResults", len(allResults))
+					for i, treeResult := range allResults {
+						logging.Debug(logging.ComponentHandler, "  Loop iteration %d: Hashtable %s", i, treeResult.Hashtable)
+						depCount := 0
+						if treeResult.DependencyResults != nil {
+							depCount = len(treeResult.DependencyResults)
+						}
+						logging.Debug(logging.ComponentHandler, "  Hashtable %s (v%s, %s): %d dependencies",
+							treeResult.Hashtable, treeResult.OSVersion, treeResult.Device, depCount)
+
 						if treeResult.DependencyResults != nil && len(treeResult.DependencyResults) > 0 {
 							// For each dependency file in this hashtable's results
 							for depPath, depResult := range treeResult.DependencyResults {
+								logging.Debug(logging.ComponentHandler, "    Processing dependency '%s': compatible=%v, %d hash errors, %d process errors",
+									depPath, depResult.Compatible, len(depResult.HashErrors), len(depResult.ProcessErrors))
+
 								// Create a TreeComparisonResult for this dependency
 								depTreeResult := qmldiff.TreeComparisonResult{
 									Hashtable:          treeResult.Hashtable,
@@ -318,7 +361,35 @@ func (h *APIHandler) Compare(w http.ResponseWriter, r *http.Request) {
 								// Add error details if the dependency failed
 								if !depResult.Compatible {
 									if len(depResult.HashErrors) > 0 {
-										depTreeResult.ErrorDetail = fmt.Sprintf("%d hash lookup errors", len(depResult.HashErrors))
+										logging.Debug(logging.ComponentHandler, "      === Dependency Hash Error Processing ===")
+										logging.Debug(logging.ComponentHandler, "      Dependency: '%s'", depPath)
+										logging.Debug(logging.ComponentHandler, "      Root file: '%s'", rootFilename)
+
+										hashIDs := make([]uint64, len(depResult.HashErrors))
+										for i, hashErr := range depResult.HashErrors {
+											hashIDs[i] = hashErr.HashID
+										}
+										logging.Debug(logging.ComponentHandler, "      Hash IDs to find (%d): %v", len(hashIDs), hashIDs)
+
+										// Resolve dependency path relative to root file
+										rootPath := filenameToPaths[rootFilename]
+										resolvedDepPath := qmd.ResolveLoadPath(rootPath, depPath)
+										logging.Debug(logging.ComponentHandler, "      Resolving depPath '%s' relative to root '%s' -> '%s'",
+											depPath, rootPath, resolvedDepPath)
+
+										depContents, err := os.ReadFile(resolvedDepPath)
+										if err != nil {
+											logging.Error(logging.ComponentHandler, "      Failed to read dependency file %s: %v", resolvedDepPath, err)
+											depTreeResult.ErrorDetail = fmt.Sprintf("%d hash lookup errors", len(depResult.HashErrors))
+										} else {
+											logging.Debug(logging.ComponentHandler, "      Successfully read file, size: %d bytes", len(depContents))
+											depStr := string(depContents)
+											depTreeResult.MissingHashes = qmd.FindHashPositions(depStr, hashIDs)
+											logging.Debug(logging.ComponentHandler, "      FindHashPositions returned %d positions: %v",
+												len(depTreeResult.MissingHashes), depTreeResult.MissingHashes)
+											depTreeResult.ErrorDetail = fmt.Sprintf("missing %d hash(es)", len(depTreeResult.MissingHashes))
+											logging.Debug(logging.ComponentHandler, "      Final ErrorDetail: '%s'", depTreeResult.ErrorDetail)
+										}
 									} else if len(depResult.ProcessErrors) > 0 {
 										depTreeResult.ErrorDetail = depResult.ProcessErrors[0]
 									} else {
@@ -329,6 +400,7 @@ func (h *APIHandler) Compare(w http.ResponseWriter, r *http.Request) {
 								// Get or create the CompareResponse for this dependency
 								if existingResponse, exists := batchResponse[depPath]; exists {
 									// Append to existing response
+									logging.Debug(logging.ComponentHandler, "      Appending to existing entry (now %d total)", existingResponse.TotalChecked+1)
 									if depResult.Compatible {
 										existingResponse.Compatible = append(existingResponse.Compatible, depTreeResult)
 									} else {
@@ -338,6 +410,7 @@ func (h *APIHandler) Compare(w http.ResponseWriter, r *http.Request) {
 									batchResponse[depPath] = existingResponse
 								} else {
 									// Create new response for this dependency
+									logging.Debug(logging.ComponentHandler, "      Creating new entry for dependency '%s'", depPath)
 									newResponse := CompareResponse{
 										Mode:         "tree",
 										TotalChecked: 1,
@@ -356,6 +429,13 @@ func (h *APIHandler) Compare(w http.ResponseWriter, r *http.Request) {
 					}
 
 					logging.Debug(logging.ComponentHandler, "Flattened dependency results for %s", rootFilename)
+				}
+
+				// Log final batchResponse summary
+				logging.Debug(logging.ComponentHandler, "Final batchResponse contains %d entries:", len(batchResponse))
+				for filename, response := range batchResponse {
+					logging.Debug(logging.ComponentHandler, "  '%s': %d total (%d compatible, %d incompatible)",
+						filename, response.TotalChecked, len(response.Compatible), len(response.Incompatible))
 				}
 
 				logging.Info(logging.ComponentHandler, "Batch tree validation complete for job %s: %d files processed, %d total results (including dependencies)",
@@ -470,6 +550,39 @@ type TreeInfo struct {
 	OSVersion string `json:"os_version"`
 	Device    string `json:"device"`
 	FileCount int    `json:"file_count"`
+}
+
+func (h *APIHandler) ListValidatedVersions(w http.ResponseWriter, r *http.Request) {
+	if err := h.hashtabService.CheckAndReload(); err != nil {
+		logging.Error(logging.ComponentHandler, "Failed to check/reload hashtables: %v", err)
+	}
+	if err := h.treeService.CheckAndReload(); err != nil {
+		logging.Error(logging.ComponentHandler, "Failed to check/reload trees: %v", err)
+	}
+
+	hashtables := h.hashtabService.GetHashtables()
+	versionSet := make(map[string]bool)
+
+	for _, ht := range hashtables {
+		_, treeExists := h.treeService.GetTreeByName(ht.Name)
+		if treeExists {
+			versionSet[ht.OSVersion] = true
+		}
+	}
+
+	versions := make([]string, 0, len(versionSet))
+	for version := range versionSet {
+		versions = append(versions, version)
+	}
+
+	response := map[string]interface{}{
+		"versions": versions,
+		"count":    len(versions),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
 }
 
 func (h *APIHandler) ListTrees(w http.ResponseWriter, r *http.Request) {
