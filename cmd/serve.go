@@ -100,6 +100,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		r.Post("/validate/tree", apiHandler.ValidateTree)
 		r.Get("/hashtables", apiHandler.ListHashtables)
 		r.Get("/trees", apiHandler.ListTrees)
+		r.Get("/validated-versions", apiHandler.ListValidatedVersions)
 		r.Get("/results/{jobId}", apiHandler.GetResults)
 		r.Get("/status/ws/{jobId}", handlers.StatusWSHandler(jobStore))
 		r.Get("/version", func(w http.ResponseWriter, r *http.Request) {

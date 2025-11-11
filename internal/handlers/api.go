@@ -380,14 +380,31 @@ func (h *APIHandler) Compare(w http.ResponseWriter, r *http.Request) {
 										depContents, err := os.ReadFile(resolvedDepPath)
 										if err != nil {
 											logging.Error(logging.ComponentHandler, "      Failed to read dependency file %s: %v", resolvedDepPath, err)
-											depTreeResult.ErrorDetail = fmt.Sprintf("%d hash lookup errors", len(depResult.HashErrors))
+											depTreeResult.ErrorDetail = fmt.Sprintf("%d hash lookup error(s)", len(depResult.HashErrors))
 										} else {
 											logging.Debug(logging.ComponentHandler, "      Successfully read file, size: %d bytes", len(depContents))
 											depStr := string(depContents)
 											depTreeResult.MissingHashes = qmd.FindHashPositions(depStr, hashIDs)
 											logging.Debug(logging.ComponentHandler, "      FindHashPositions returned %d positions: %v",
 												len(depTreeResult.MissingHashes), depTreeResult.MissingHashes)
-											depTreeResult.ErrorDetail = fmt.Sprintf("missing %d hash(es)", len(depTreeResult.MissingHashes))
+
+											// If we found positions in the file, show them
+											if len(depTreeResult.MissingHashes) > 0 {
+												depTreeResult.ErrorDetail = fmt.Sprintf("missing %d hash(es)", len(depTreeResult.MissingHashes))
+											} else {
+												// Hash errors exist but aren't in this file - they're in referenced files
+												// Show hash IDs without positions
+												depTreeResult.ErrorDetail = fmt.Sprintf("%d hash lookup error(s)", len(depResult.HashErrors))
+												// Create MissingHashes entries with the hash IDs but no position info
+												depTreeResult.MissingHashes = make([]qmd.HashWithPosition, len(hashIDs))
+												for i, hashID := range hashIDs {
+													depTreeResult.MissingHashes[i] = qmd.HashWithPosition{
+														Hash:   hashID,
+														Line:   0,
+														Column: 0,
+													}
+												}
+											}
 											logging.Debug(logging.ComponentHandler, "      Final ErrorDetail: '%s'", depTreeResult.ErrorDetail)
 										}
 									} else if len(depResult.ProcessErrors) > 0 {
