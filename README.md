@@ -14,6 +14,8 @@ Web application and API for verifying QMD (QML Diff) files against multiple hash
 - Automatic dependency tracking for QMD files
 - Hot reload for hashtables and QML trees
 
+**Note:** This tool is provided for QMD verification only. Assistance with extracting hashtables or QML trees will not be provided.
+
 ## Quick Start
 
 ### Docker Deployment
