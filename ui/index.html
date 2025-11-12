@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <link id="favicon" rel="icon" type="image/svg+xml" href="/favicon-light.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>reMarkable QMD Verifier</title>
     <meta name="theme-color" id="themeColor" content="#FFFFFF"/>
@@ -19,6 +19,14 @@
           }
         }
 
+        function updateFavicon(isDark) {
+          const faviconPath = isDark ? '/favicon-dark.svg' : '/favicon-light.svg';
+          const faviconEl = document.getElementById('favicon');
+          if (faviconEl) {
+            faviconEl.setAttribute('href', faviconPath);
+          }
+        }
+
         const stored = localStorage.getItem('theme');
         const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
         const theme = stored === 'light' || stored === 'dark'
@@ -30,6 +38,7 @@
           document.documentElement.classList.add('dark');
         }
         updateThemeColor(isDark);
+        updateFavicon(isDark);
 
         if (!stored || (stored !== 'light' && stored !== 'dark')) {
           window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
@@ -40,6 +49,7 @@
               document.documentElement.classList.remove('dark');
             }
             updateThemeColor(systemDark);
+            updateFavicon(systemDark);
           });
         }
 
@@ -48,6 +58,7 @@
             if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
               const isDark = document.documentElement.classList.contains('dark');
               updateThemeColor(isDark);
+              updateFavicon(isDark);
             }
           });
         });
