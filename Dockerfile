@@ -12,20 +12,33 @@ COPY ui/ ./
 
 RUN npm run build
 
+FROM --platform=$BUILDPLATFORM rust:1-alpine AS qmldiff-builder
+
+WORKDIR /build
+
+RUN apk add --no-cache git musl-dev
+
+# Clone qmldiff repository (collect-hash-errors branch)
+RUN git clone --depth 1 --branch collect-hash-errors \
+    https://github.com/rmitchellscott/qmldiff.git qmldiff
+
+# Build qmldiff CLI binary
+WORKDIR /build/qmldiff
+RUN cargo build --release --bin qmldiff
+
 FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS backend-builder
 
 COPY --from=xx / /
 
 WORKDIR /build
 
-RUN apk add --no-cache git ca-certificates tzdata clang lld
+RUN apk add --no-cache git ca-certificates tzdata clang lld musl-dev
 
 COPY go.mod go.sum ./
 
 RUN go mod download
 
 COPY main.go ./
-COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 COPY pkg/ ./pkg/
 
@@ -36,6 +49,7 @@ ARG VERSION=dev
 ARG COMMIT=unknown
 ARG BUILD_TIME=unknown
 
+# Build main server binary (no CGO needed - uses qmldiff CLI binary)
 RUN CGO_ENABLED=0 xx-go build -trimpath \
     -ldflags="-w -s \
     -X github.com/rmitchellscott/rm-qmd-verify/internal/version.Version=${VERSION} \
@@ -47,16 +61,19 @@ RUN CGO_ENABLED=0 xx-go build -trimpath \
 
 FROM alpine:3.20
 
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata libgcc
 
 WORKDIR /app
 
 COPY --from=backend-builder /build/rm-qmd-verify /app/rm-qmd-verify
+COPY --from=qmldiff-builder /build/qmldiff/target/release/qmldiff /app/qmldiff
 
-RUN mkdir -p /app/hashtables
+RUN mkdir -p /app/hashtables /app/qml-trees
 
 ENV PORT=8080 \
-    HASHTAB_DIR=/app/hashtables
+    HASHTAB_DIR=/app/hashtables \
+    QML_TREE_DIR=/app/qml-trees \
+    QMLDIFF_BINARY=/app/qmldiff
 
 EXPOSE 8080
 

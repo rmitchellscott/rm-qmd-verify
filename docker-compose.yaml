@@ -11,6 +11,7 @@ services:
     environment:
       - PORT=8080
       - HASHTAB_DIR=/app/hashtables
+      - MAX_CONCURRENT_VALIDATIONS=15
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/"]

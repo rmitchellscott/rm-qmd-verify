@@ -1,7 +1,13 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { FileComparisonMatrix } from '@/components/FileComparisonMatrix';
 import { FileDetailModal } from '@/components/FileDetailModal';
+import { DeviceSelector } from '@/components/DeviceSelector';
+import { VersionRangeSlider } from '@/components/VersionRangeSlider';
+import { SortSelector } from '@/components/SortSelector';
+import { useFilterPreferences } from '@/hooks/useFilterPreferences';
+import { useSortPreferences } from '@/hooks/useSortPreferences';
+import { sortFiles, detectHasDependencies } from '@/utils/sortFiles';
 import ThemeSwitcher from '@/components/ThemeSwitcher';
 import type { CompareResponse } from '@/components/CompatibilityMatrix';
 
@@ -14,8 +20,60 @@ export function ComparisonResultsPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const state = location.state as LocationState | null;
+  const [persistedResults, setPersistedResults] = useState<LocationState | null>(null);
   const [selectedFileForModal, setSelectedFileForModal] = useState<string | null>(null);
   const [versionInfo, setVersionInfo] = useState<{ version: string } | null>(null);
+  const { preferences, setSelectedDevices, setVersionRange } = useFilterPreferences();
+
+  useEffect(() => {
+    if (state?.results && !persistedResults) {
+      setPersistedResults(state);
+    }
+  }, [state, persistedResults]);
+
+  const activeState = persistedResults || state;
+
+  const resultsMap = useMemo(() => {
+    if (!activeState?.results) return new Map<string, CompareResponse>();
+    return new Map(Object.entries(activeState.results));
+  }, [activeState?.results]);
+
+  const hasDependencies = useMemo(() => {
+    return detectHasDependencies(resultsMap);
+  }, [resultsMap]);
+
+  const defaultSort = hasDependencies ? 'dependency' : 'alphabetical';
+  const { sortMethod, setSortMethod } = useSortPreferences(defaultSort);
+
+  const sortedFiles = useMemo(() => {
+    if (!activeState?.filenames) return [];
+    return sortFiles(
+      activeState.filenames,
+      resultsMap,
+      sortMethod,
+      preferences.selectedDevices,
+      preferences.minVersion,
+      preferences.maxVersion
+    );
+  }, [
+    activeState?.filenames,
+    resultsMap,
+    sortMethod,
+    preferences.selectedDevices,
+    preferences.minVersion,
+    preferences.maxVersion,
+  ]);
+
+  const availableVersions = useMemo(() => {
+    if (!activeState?.results) return [];
+    const versionSet = new Set<string>();
+    Object.values(activeState.results).forEach(result => {
+      [...result.compatible, ...result.incompatible].forEach(r => {
+        versionSet.add(r.os_version);
+      });
+    });
+    return Array.from(versionSet).sort();
+  }, [activeState?.results]);
 
   useEffect(() => {
     const fetchVersionInfo = async () => {
@@ -33,12 +91,10 @@ export function ComparisonResultsPage() {
     fetchVersionInfo();
   }, []);
 
-  if (!state || !state.results || !state.filenames || Object.keys(state.results).length === 0) {
+  if (!activeState || !activeState.results || !activeState.filenames || Object.keys(activeState.results).length === 0) {
     navigate('/');
     return null;
   }
-
-  const resultsMap = new Map(Object.entries(state.results));
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -63,11 +119,31 @@ export function ComparisonResultsPage() {
       </div>
 
       <div className="container mx-auto px-4 py-6 flex-1">
-        <div className="max-w-4xl mx-auto">
+        <div className="max-w-4xl mx-auto space-y-6">
+          <div className="@container space-y-4 p-4 border rounded-lg bg-muted/50">
+            <DeviceSelector
+              selectedDevices={preferences.selectedDevices}
+              onChange={setSelectedDevices}
+            />
+            {availableVersions.length > 0 && (
+              <VersionRangeSlider
+                availableVersions={availableVersions}
+                minVersion={preferences.minVersion}
+                maxVersion={preferences.maxVersion}
+                onChange={setVersionRange}
+              />
+            )}
+          </div>
+
+          <SortSelector sortMethod={sortMethod} onChange={setSortMethod} />
+
           <FileComparisonMatrix
             results={resultsMap}
-            filenames={state.filenames}
+            files={sortedFiles}
             onRowClick={setSelectedFileForModal}
+            filterDevices={preferences.selectedDevices}
+            filterMinVersion={preferences.minVersion}
+            filterMaxVersion={preferences.maxVersion}
           />
         </div>
       </div>

@@ -13,6 +13,7 @@ const (
 	ComponentServer   Component = "SERVER"
 	ComponentHashtab  Component = "HASHTAB"
 	ComponentQMLDiff  Component = "QMLDIFF"
+	ComponentQMD      Component = "QMD"
 	ComponentHandler  Component = "HANDLER"
 )
 
@@ -32,4 +33,10 @@ func Warn(component Component, message string, args ...interface{}) {
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 	msg := fmt.Sprintf(message, args...)
 	log.Printf("[%s] [%s] WARN: %s", timestamp, component, msg)
+}
+
+func Debug(component Component, message string, args ...interface{}) {
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	msg := fmt.Sprintf(message, args...)
+	log.Printf("[%s] [%s] DEBUG: %s", timestamp, component, msg)
 }

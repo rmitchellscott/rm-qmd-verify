@@ -13,10 +13,12 @@ import { FileList } from '@/components/FileList'
 import { CompatibilityMatrix, type CompareResponse } from '@/components/CompatibilityMatrix'
 import { FileDetailModal } from '@/components/FileDetailModal'
 import { ComparisonResultsPage } from '@/components/ComparisonResultsPage'
+import { DeviceSelector } from '@/components/DeviceSelector'
+import { VersionRangeSlider } from '@/components/VersionRangeSlider'
+import { VersionRangeSliderSkeleton } from '@/components/VersionRangeSliderSkeleton'
+import { useFilterPreferences } from '@/hooks/useFilterPreferences'
 import { waitForJobWS } from '@/lib/websocket'
 import type { JobStatus } from '@/lib/websocket'
-
-const CONCURRENCY = 3
 
 interface FileStatus {
   status: 'pending' | 'uploading' | 'processing' | 'success' | 'error';
@@ -31,8 +33,10 @@ function HomePage() {
   const [fileResults, setFileResults] = useState<Map<string, CompareResponse>>(new Map())
   const [selectedFileForModal, setSelectedFileForModal] = useState<string | null>(null)
   const [isProcessing, setIsProcessing] = useState(false)
-  const [shouldNavigateToResults, setShouldNavigateToResults] = useState(false)
   const [versionInfo, setVersionInfo] = useState<{ version: string } | null>(null)
+  const [availableVersions, setAvailableVersions] = useState<string[]>([])
+  const [isLoadingVersions, setIsLoadingVersions] = useState(true)
+  const { preferences, setSelectedDevices, setVersionRange } = useFilterPreferences()
 
   useEffect(() => {
     const fetchVersionInfo = async () => {
@@ -49,15 +53,32 @@ function HomePage() {
 
     const refreshHashtables = async () => {
       try {
-        // Trigger hashtable check/reload on page load
-        await fetch('/api/hashtables')
+        const response = await fetch('/api/validated-versions')
+        if (response.ok) {
+          const data = await response.json()
+          if (data.versions && Array.isArray(data.versions)) {
+            setAvailableVersions(data.versions.sort())
+          }
+        }
       } catch (error) {
-        console.error('Failed to refresh hashtables:', error)
+        console.error('Failed to refresh validated versions:', error)
+      } finally {
+        setIsLoadingVersions(false)
+      }
+    }
+
+    const refreshTrees = async () => {
+      try {
+        // Trigger tree check/reload on page load
+        await fetch('/api/trees')
+      } catch (error) {
+        console.error('Failed to refresh trees:', error)
       }
     }
 
     fetchVersionInfo()
     refreshHashtables()
+    refreshTrees()
   }, [])
 
   useEffect(() => {
@@ -66,16 +87,19 @@ function HomePage() {
       return status && (status.status === 'success' || status.status === 'error')
     })
 
-    if (shouldNavigateToResults && !isProcessing && allFilesProcessed && files.length > 1) {
+    if (!isProcessing && allFilesProcessed && files.length > 1) {
+      // Pass all filenames from results (includes dependencies)
+      const allFilenames = Array.from(fileResults.keys())
+      console.log('Navigating to results with filenames:', allFilenames)
+
       navigate('/results', {
         state: {
           results: Object.fromEntries(fileResults),
-          filenames: files.map(f => f.name)
+          filenames: allFilenames
         }
       })
-      setShouldNavigateToResults(false)
     }
-  }, [shouldNavigateToResults, isProcessing, fileStatuses, fileResults, files, navigate])
+  }, [isProcessing, fileStatuses, fileResults, files, navigate])
 
   const handleFilesSelected = (selectedFiles: File[]) => {
     setFiles(selectedFiles)
@@ -107,8 +131,8 @@ function HomePage() {
     })
   }
 
-  const uploadFileWithProgress = async (
-    file: File,
+  const uploadBatchWithProgress = async (
+    files: File[],
     onProgress: (percent: number) => void
   ): Promise<{ jobId: string }> => {
     return new Promise((resolve, reject) => {
@@ -139,80 +163,118 @@ function HomePage() {
       })
 
       const formData = new FormData()
-      formData.append('file', file)
+      files.forEach(file => {
+        console.log('Uploading file:', file.name)  // DEBUG
+        formData.append('files', file)
+        formData.append('paths', file.name)  // Send path separately to bypass browser sanitization
+      })
 
       xhr.open('POST', '/api/compare')
       xhr.send(formData)
     })
   }
 
-  const processFile = async (file: File, localResults?: Map<string, CompareResponse>) => {
+  const handleUploadAll = async () => {
+    if (files.length === 0) return
+
+    setIsProcessing(true)
+
     try {
-      updateFileStatus(file.name, { status: 'uploading', progress: 0 })
-
-      const { jobId } = await uploadFileWithProgress(file, (progress) => {
-        updateFileStatus(file.name, { progress, message: 'Uploading...' })
+      // Set all files to uploading state
+      files.forEach(file => {
+        updateFileStatus(file.name, { status: 'uploading', progress: 0 })
       })
 
-      updateFileStatus(file.name, {
-        status: 'processing',
-        progress: 0,
-        message: 'Processing...'
-      })
-
-      await waitForJobWS(jobId, (status: JobStatus) => {
-        updateFileStatus(file.name, {
-          progress: status.progress,
-          message: status.message
+      // Upload all files in a single batch request
+      const { jobId } = await uploadBatchWithProgress(files, (progress) => {
+        // Update all files with upload progress
+        files.forEach(file => {
+          updateFileStatus(file.name, { progress, message: 'Uploading...' })
         })
       })
 
+      // Set all files to processing state
+      files.forEach(file => {
+        updateFileStatus(file.name, {
+          status: 'processing',
+          progress: 0,
+          message: 'Processing...'
+        })
+      })
+
+      // Wait for batch processing to complete
+      await waitForJobWS(jobId, (status: JobStatus) => {
+        // Update all files with processing progress
+        files.forEach(file => {
+          updateFileStatus(file.name, {
+            progress: status.progress,
+            message: status.message
+          })
+        })
+      })
+
+      // Fetch batch results
       const resultsResponse = await fetch(`/api/results/${jobId}`)
       if (!resultsResponse.ok) {
         throw new Error('Failed to fetch results')
       }
 
-      const results: CompareResponse = await resultsResponse.json()
-      setFileResults(prev => new Map(prev).set(file.name, results))
+      const batchResults = await resultsResponse.json()
 
-      if (localResults) {
-        localResults.set(file.name, results)
+      // Handle single file (backward compatibility)
+      if (files.length === 1) {
+        const results: CompareResponse = batchResults
+        setFileResults(prev => new Map(prev).set(files[0].name, results))
+
+        updateFileStatus(files[0].name, {
+          status: 'success',
+          progress: 100,
+          message: 'Complete'
+        })
+      } else {
+        // Handle multiple files (batch response)
+        const resultsMap: Record<string, CompareResponse> = batchResults
+        const newResults = new Map(fileResults)
+
+        console.log('Backend returned results for files:', Object.keys(resultsMap))
+        console.log('Frontend has files:', files.map(f => f.name))
+
+        // Process ALL files from backend response (includes dependencies)
+        Object.entries(resultsMap).forEach(([filename, results]) => {
+          newResults.set(filename, results)
+          updateFileStatus(filename, {
+            status: 'success',
+            progress: 100,
+            message: 'Complete'
+          })
+        })
+
+        // Check if any uploaded files didn't get results
+        files.forEach(file => {
+          if (!resultsMap[file.name]) {
+            updateFileStatus(file.name, {
+              status: 'error',
+              message: 'No results received'
+            })
+          }
+        })
+
+        setFileResults(newResults)
       }
-
-      updateFileStatus(file.name, {
-        status: 'success',
-        progress: 100,
-        message: 'Complete'
-      })
     } catch (error) {
-      updateFileStatus(file.name, {
-        status: 'error',
-        message: error instanceof Error ? error.message : 'An error occurred'
+      // Mark all files as error
+      files.forEach(file => {
+        updateFileStatus(file.name, {
+          status: 'error',
+          message: error instanceof Error ? error.message : 'An error occurred'
+        })
       })
+
       toast.error("Processing failed", {
-        description: `${file.name}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        description: error instanceof Error ? error.message : 'Unknown error',
       })
-    }
-  }
-
-  const handleUploadAll = async () => {
-    if (files.length === 0) return
-
-    setIsProcessing(true)
-    setShouldNavigateToResults(false)
-
-    const localResults = new Map<string, CompareResponse>()
-    const queue = [...files]
-
-    while (queue.length > 0) {
-      const batch = queue.splice(0, CONCURRENCY)
-      await Promise.all(batch.map(file => processFile(file, localResults)))
-    }
-
-    setIsProcessing(false)
-
-    if (files.length > 1) {
-      setShouldNavigateToResults(true)
+    } finally {
+      setIsProcessing(false)
     }
   }
 
@@ -221,6 +283,8 @@ function HomePage() {
     setFileStatuses(new Map())
     setFileResults(new Map())
     setSelectedFileForModal(null)
+    setSelectedDevices(['rm1', 'rm2', 'rmpp', 'rmppm'])
+    setVersionRange(null, null)
   }
 
   const handleRemoveFile = (index: number) => {
@@ -246,9 +310,10 @@ function HomePage() {
     return status && (status.status === 'success' || status.status === 'error')
   })
 
-  const completedFiles = Array.from(fileStatuses.values())
-    .filter(s => s.status === 'success' || s.status === 'error').length
-  const overallProgress = files.length > 0 ? (completedFiles / files.length) * 100 : 0
+  const overallProgress = files.length > 0
+    ? Array.from(fileStatuses.values())
+        .reduce((sum, status) => sum + status.progress, 0) / files.length
+    : 0
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -263,6 +328,23 @@ function HomePage() {
               <CardTitle>Verify QMD Files</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
+              <div className="@container space-y-4 p-4 border rounded-lg bg-muted/50">
+                <DeviceSelector
+                  selectedDevices={preferences.selectedDevices}
+                  onChange={setSelectedDevices}
+                />
+                {isLoadingVersions ? (
+                  <VersionRangeSliderSkeleton />
+                ) : availableVersions.length > 0 ? (
+                  <VersionRangeSlider
+                    availableVersions={availableVersions}
+                    minVersion={preferences.minVersion}
+                    maxVersion={preferences.maxVersion}
+                    onChange={setVersionRange}
+                  />
+                ) : null}
+              </div>
+
               <FileDropzone
                 onFileSelected={(file) => handleFilesSelected([file])}
                 onFilesSelected={handleFilesSelected}
@@ -320,6 +402,9 @@ function HomePage() {
               <CardContent>
                 <CompatibilityMatrix
                   results={fileResults.get(files[0].name)!}
+                  filterDevices={preferences.selectedDevices}
+                  filterMinVersion={preferences.minVersion}
+                  filterMaxVersion={preferences.maxVersion}
                 />
               </CardContent>
             </Card>

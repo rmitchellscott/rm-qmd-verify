@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState, useRef } from 'react'
-import { extractQMDsFromZip, extractQMDsFromFolder, sortFilesLexicographically } from '@/lib/fileUtils'
+import { extractQMDsFromZip, extractQMDsFromTarGz, extractQMDsFromFolder, sortFilesLexicographically } from '@/lib/fileUtils'
 
 interface FileDropzoneProps {
   onFileSelected: (file: File) => void
@@ -37,6 +37,15 @@ export function FileDropzone({
         if (file.name.toLowerCase().endsWith('.zip')) {
           try {
             const extracted = await extractQMDsFromZip(file)
+            allQMDFiles.push(...extracted)
+          } catch (err) {
+            if (onError) {
+              onError(`Failed to extract ${file.name}: ${err}`)
+            }
+          }
+        } else if (file.name.toLowerCase().endsWith('.tar.gz') || file.name.toLowerCase().endsWith('.tgz')) {
+          try {
+            const extracted = await extractQMDsFromTarGz(file)
             allQMDFiles.push(...extracted)
           } catch (err) {
             if (onError) {
@@ -104,11 +113,16 @@ export function FileDropzone({
         for (const item of items) {
           const entry = item.webkitGetAsEntry()
           if (entry) {
-            try {
-              const extractedFiles = await extractQMDsFromFolder(entry)
-              allFiles.push(...extractedFiles)
-            } catch (err) {
-              console.error('Failed to extract from folder:', err)
+            if (entry.isFile) {
+              const file = item.getAsFile()
+              if (file) allFiles.push(file)
+            } else if (entry.isDirectory) {
+              try {
+                const extractedFiles = await extractQMDsFromFolder(entry)
+                allFiles.push(...extractedFiles)
+              } catch (err) {
+                console.error('Failed to extract from folder:', err)
+              }
             }
           }
         }
@@ -118,6 +132,7 @@ export function FileDropzone({
       }
 
       if (allFiles.length > 0) {
+        console.log('Extracted files:', allFiles.map(f => f.name))  // DEBUG
         processFiles(allFiles)
       }
     }

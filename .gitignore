@@ -34,17 +34,25 @@ Thumbs.db
 
 # Build artifacts
 ui/dist/
+rm-qmd-verify
+rm-qmd-verify-test
+qmd-tree-test
+lib/libqmldiff.a
+/qmldiff/
 
 # Data
 /data/
 *.db
 *.sqlite
+/hashtables/
+/qml-trees/
 
 # Logs
 *.log
 
 # Temporary files
 /tmp/
+*.bak
 
 # Dev
 docker-compose.dev.yaml
