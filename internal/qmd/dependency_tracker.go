@@ -68,6 +68,9 @@ func BuildDependencyInfo(qmdPath string) (*DependencyInfo, error) {
 	loadGraph := make(map[string][]string)
 	visited := make(map[string]bool)
 
+	// Get root file directory for path normalization
+	rootDir := filepath.Dir(qmdPath)
+
 	// Queue for BFS traversal: each item is (filePath, parentPath, depth)
 	type queueItem struct {
 		filePath   string
@@ -105,19 +108,27 @@ func BuildDependencyInfo(qmdPath string) (*DependencyInfo, error) {
 			// Resolve relative to current file
 			resolvedPath := ResolveLoadPath(current.filePath, loadPath)
 
-			// Track this child
-			children = append(children, loadPath)
+			// Normalize path to be relative to root file directory
+			normalizedPath, err := filepath.Rel(rootDir, resolvedPath)
+			if err != nil {
+				// If we can't make it relative, use the basename as fallback
+				logging.Warn(logging.ComponentQMD, "Cannot make path %s relative to %s: %v", resolvedPath, rootDir, err)
+				normalizedPath = filepath.Base(resolvedPath)
+			}
+
+			// Track this child using normalized path
+			children = append(children, normalizedPath)
 
 			// Check for circular dependency
 			if visited[resolvedPath] {
 				// File already in dependency tree - could be circular or just duplicate LOAD
-				logging.Debug(logging.ComponentQMD, "File %s already visited (loaded by multiple files or circular)", loadPath)
+				logging.Debug(logging.ComponentQMD, "File %s already visited (loaded by multiple files or circular)", normalizedPath)
 				continue
 			}
 
-			// Add to discovered loads and mark as visited
-			allLoads = append(allLoads, loadPath)
-			loadOrder[loadPath] = len(allLoads) - 1
+			// Add to discovered loads and mark as visited (using normalized path)
+			allLoads = append(allLoads, normalizedPath)
+			loadOrder[normalizedPath] = len(allLoads) - 1
 			visited[resolvedPath] = true
 
 			// Add to queue for processing

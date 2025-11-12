@@ -1,7 +1,9 @@
-import { CheckCircle2, XCircle, AlertCircle } from 'lucide-react';
+import { useState } from 'react';
+import { CheckCircle2, XCircle, AlertCircle, ChevronRight, ChevronDown } from 'lucide-react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import type { CompareResponse } from './CompatibilityMatrix';
+import type { FileSortResult, FileTreeNode } from '@/utils/sortFiles';
 
 const deviceNames: Record<string, { short: string; full: string }> = {
   'rm1': { short: 'rM1', full: 'reMarkable 1' },
@@ -42,22 +44,39 @@ function isVersionInRange(version: string, min: string | null, max: string | nul
 
 interface FileComparisonMatrixProps {
   results: Map<string, CompareResponse>;
-  filenames: string[];
+  files: FileSortResult;
   onRowClick: (filename: string) => void;
   filterDevices?: string[];
   filterMinVersion?: string | null;
   filterMaxVersion?: string | null;
 }
 
+function isTreeNode(files: FileSortResult): files is FileTreeNode[] {
+  return files.length > 0 && typeof files[0] === 'object' && 'isRoot' in files[0];
+}
+
 export function FileComparisonMatrix({
   results,
-  filenames,
+  files,
   onRowClick,
   filterDevices = ['rm1', 'rm2', 'rmpp', 'rmppm'],
   filterMinVersion = null,
   filterMaxVersion = null
 }: FileComparisonMatrixProps) {
+  const [expandedRoots, setExpandedRoots] = useState<Set<string>>(new Set());
   const deviceKeys = ['rm1', 'rm2', 'rmpp', 'rmppm'].filter(d => filterDevices.includes(d));
+
+  const toggleExpanded = (filename: string) => {
+    setExpandedRoots(prev => {
+      const next = new Set(prev);
+      if (next.has(filename)) {
+        next.delete(filename);
+      } else {
+        next.add(filename);
+      }
+      return next;
+    });
+  };
 
   const aggregateFileDeviceResults = (filename: string, device: string): 'all-compatible' | 'all-incompatible' | 'mixed' | 'no-data' => {
     const fileResults = results.get(filename);
@@ -117,6 +136,63 @@ export function FileComparisonMatrix({
     );
   };
 
+  const renderFileRow = (filename: string, isRoot: boolean, hasChildren?: boolean) => {
+    const isExpanded = expandedRoots.has(filename);
+    const showChevron = hasChildren && hasChildren;
+
+    return (
+      <TableRow
+        key={filename}
+        className="cursor-pointer hover:bg-muted/50"
+        onClick={() => onRowClick(filename)}
+      >
+        <TableCell className="font-medium">
+          <div className="flex items-center gap-2" style={{ paddingLeft: isRoot ? 0 : '2rem' }}>
+            {showChevron && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleExpanded(filename);
+                }}
+                className="hover:bg-muted rounded p-0.5"
+              >
+                {isExpanded ? (
+                  <ChevronDown className="h-4 w-4" />
+                ) : (
+                  <ChevronRight className="h-4 w-4" />
+                )}
+              </button>
+            )}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="truncate block max-w-xs">
+                  {filename}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>Click to see detailed version compatibility</TooltipContent>
+            </Tooltip>
+          </div>
+        </TableCell>
+        {deviceKeys.map(device => renderDeviceCell(filename, device))}
+      </TableRow>
+    );
+  };
+
+  const renderTreeNode = (node: FileTreeNode): React.ReactNode[] => {
+    const isExpanded = expandedRoots.has(node.filename);
+    const rows: React.ReactNode[] = [
+      renderFileRow(node.filename, node.isRoot, node.children.length > 0)
+    ];
+
+    if (isExpanded && node.children.length > 0) {
+      node.children.forEach(child => {
+        rows.push(...renderTreeNode(child));
+      });
+    }
+
+    return rows;
+  };
+
   return (
     <TooltipProvider disableHoverableContent>
       <Table>
@@ -132,23 +208,15 @@ export function FileComparisonMatrix({
           </TableRow>
         </TableHeader>
         <TableBody>
-          {filenames.map(filename => (
-            <TableRow
-              key={filename}
-              className="cursor-pointer hover:bg-muted/50"
-              onClick={() => onRowClick(filename)}
-            >
-              <TableCell className="font-medium">
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span className="truncate block max-w-xs">{filename}</span>
-                  </TooltipTrigger>
-                  <TooltipContent>Click to see detailed version compatibility</TooltipContent>
-                </Tooltip>
-              </TableCell>
-              {deviceKeys.map(device => renderDeviceCell(filename, device))}
-            </TableRow>
-          ))}
+          {isTreeNode(files) ? (
+            <>
+              {files.map(node => renderTreeNode(node))}
+            </>
+          ) : (
+            <>
+              {files.map(filename => renderFileRow(filename, true, false))}
+            </>
+          )}
         </TableBody>
       </Table>
     </TooltipProvider>

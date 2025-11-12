@@ -4,7 +4,10 @@ import { FileComparisonMatrix } from '@/components/FileComparisonMatrix';
 import { FileDetailModal } from '@/components/FileDetailModal';
 import { DeviceSelector } from '@/components/DeviceSelector';
 import { VersionRangeSlider } from '@/components/VersionRangeSlider';
+import { SortSelector } from '@/components/SortSelector';
 import { useFilterPreferences } from '@/hooks/useFilterPreferences';
+import { useSortPreferences } from '@/hooks/useSortPreferences';
+import { sortFiles, detectHasDependencies } from '@/utils/sortFiles';
 import ThemeSwitcher from '@/components/ThemeSwitcher';
 import type { CompareResponse } from '@/components/CompatibilityMatrix';
 
@@ -29,6 +32,37 @@ export function ComparisonResultsPage() {
   }, [state, persistedResults]);
 
   const activeState = persistedResults || state;
+
+  const resultsMap = useMemo(() => {
+    if (!activeState?.results) return new Map<string, CompareResponse>();
+    return new Map(Object.entries(activeState.results));
+  }, [activeState?.results]);
+
+  const hasDependencies = useMemo(() => {
+    return detectHasDependencies(resultsMap);
+  }, [resultsMap]);
+
+  const defaultSort = hasDependencies ? 'dependency' : 'alphabetical';
+  const { sortMethod, setSortMethod } = useSortPreferences(defaultSort);
+
+  const sortedFiles = useMemo(() => {
+    if (!activeState?.filenames) return [];
+    return sortFiles(
+      activeState.filenames,
+      resultsMap,
+      sortMethod,
+      preferences.selectedDevices,
+      preferences.minVersion,
+      preferences.maxVersion
+    );
+  }, [
+    activeState?.filenames,
+    resultsMap,
+    sortMethod,
+    preferences.selectedDevices,
+    preferences.minVersion,
+    preferences.maxVersion,
+  ]);
 
   const availableVersions = useMemo(() => {
     if (!activeState?.results) return [];
@@ -61,8 +95,6 @@ export function ComparisonResultsPage() {
     navigate('/');
     return null;
   }
-
-  const resultsMap = new Map(Object.entries(activeState.results));
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -103,9 +135,11 @@ export function ComparisonResultsPage() {
             )}
           </div>
 
+          <SortSelector sortMethod={sortMethod} onChange={setSortMethod} />
+
           <FileComparisonMatrix
             results={resultsMap}
-            filenames={activeState.filenames}
+            files={sortedFiles}
             onRowClick={setSelectedFileForModal}
             filterDevices={preferences.selectedDevices}
             filterMinVersion={preferences.minVersion}
