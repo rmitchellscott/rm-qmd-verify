@@ -8,6 +8,11 @@ Web application and API for verifying QMD (QML Diff) files against multiple hash
 - Parallel verification against all available hashtables
 - Compatibility matrix showing which OS/device combinations are supported
 - REST API for programmatic access
+- Real-time progress updates via WebSocket
+- Background job queue for async processing
+- Batch file upload and validation
+- Automatic dependency tracking for QMD files
+- Hot reload for hashtables and QML trees
 
 ## Quick Start
 
@@ -39,9 +44,11 @@ The server starts on port 8080 by default. Access the web interface at http://lo
 Set environment variables in `.env` or pass them directly:
 
 ```bash
-PORT=8080                     # Server port
-HASHTAB_DIR=./hashtables      # Hashtable directory path
-QML_TREE_DIR=./qml-trees      # QML tree directory path (for tree validation)
+PORT=8080                              # Server port (default: 8080)
+HASHTAB_DIR=./hashtables               # Hashtable directory path (default: ./hashtables)
+QML_TREE_DIR=./qml-trees               # QML tree directory path (default: ./qml-trees)
+QMLDIFF_BINARY=./qmldiff               # Path to qmldiff CLI binary (default: ./qmldiff)
+MAX_CONCURRENT_VALIDATIONS=15          # Max parallel validations (default: 15)
 ```
 
 ## Development
@@ -50,31 +57,29 @@ QML_TREE_DIR=./qml-trees      # QML tree directory path (for tree validation)
 
 **Prerequisites:**
 - Go 1.23+
-- Rust/Cargo (for building qmldiff static library)
-- GCC or Clang (for CGO)
+- Rust/Cargo (for building qmldiff CLI binary)
 
 ```bash
 # Install dependencies
 go mod download
 
-# Build qmldiff static library
+# Build qmldiff CLI binary
 git clone --branch collect-hash-errors https://github.com/rmitchellscott/qmldiff
 cd qmldiff
-cargo build --release
+cargo build --release --bin qmldiff
 cd ..
 
-# Copy static library to project
-mkdir -p lib
-cp qmldiff/target/release/libqmldiff.a lib/
+# Copy binary to project directory
+cp qmldiff/target/release/qmldiff ./
 
-# Build and run the server (with CGO enabled)
-CGO_ENABLED=1 go build
-./rm-qmd-verify serve
+# Build and run the server
+go build
+./rm-qmd-verify
 ```
 
 ### Frontend
 
-**Prerequisites:** Node.js 24+
+**Prerequisites:** Node.js 20 LTS+
 
 ```bash
 cd ui
@@ -171,6 +176,87 @@ List all loaded hashtables.
 }
 ```
 
+### GET /api/trees
+
+List all available QML trees.
+
+**Response:**
+```json
+{
+  "trees": [
+    {
+      "name": "3.22.0.64-rmpp",
+      "os_version": "3.22.0.64",
+      "device": "rmpp",
+      "path": "/app/qml-trees/3.22.0.64-rmpp"
+    }
+  ],
+  "count": 1
+}
+```
+
+### GET /api/validated-versions
+
+List all OS versions that have available QML trees for validation.
+
+**Response:**
+```json
+{
+  "versions": [
+    {
+      "os_version": "3.22.0.64",
+      "devices": ["rmpp", "rmppm"]
+    }
+  ]
+}
+```
+
+### GET /api/results/{jobId}
+
+Retrieve results for a validation job.
+
+**Response:**
+```json
+{
+  "jobId": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "completed",
+  "files_processed": 15,
+  "files_modified": 3,
+  "files_with_errors": 0,
+  "has_hash_errors": false,
+  "errors": [],
+  "success": true
+}
+```
+
+### GET /api/status/ws/{jobId}
+
+WebSocket endpoint for real-time job status updates. Connect to receive live progress updates during validation.
+
+**Connection:** `ws://localhost:8080/api/status/ws/{jobId}`
+
+**Messages:**
+```json
+{
+  "status": "processing",
+  "progress": 50,
+  "message": "Processing file 5 of 10"
+}
+```
+
+### GET /api/version
+
+Get application version information.
+
+**Response:**
+```json
+{
+  "version": "1.0.0",
+  "commit": "abc123def",
+  "buildTime": "2025-01-15T10:30:00Z"
+}
+```
+
 ## Hashtables
 
 Hashtables are device and OS-specific reference files used to verify QMD file compatibility. They are organized in device-specific directories:
@@ -225,10 +311,12 @@ docker run -d -p 8080:8080 \
 
 ## Architecture
 
-- **Backend:** Go with Chi router + CGO
+- **Backend:** Go with Chi router
 - **Frontend:** React + TypeScript + Vite + shadcn/ui
-- **QMLDiff:** Integration via [qmldiff](https://github.com/rmitchellscott/qmldiff) static library (Rust + C FFI)
+- **QMLDiff:** Integration via [qmldiff](https://github.com/rmitchellscott/qmldiff) CLI binary (Rust)
 - **Validation:** Worker pool parallelization for efficient tree validation
+- **Real-time Updates:** WebSocket connections for live job progress
+- **Job Processing:** Background job queue with concurrent validation support
 
 ## License
 
