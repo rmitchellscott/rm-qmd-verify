@@ -113,11 +113,16 @@ export function FileDropzone({
         for (const item of items) {
           const entry = item.webkitGetAsEntry()
           if (entry) {
-            try {
-              const extractedFiles = await extractQMDsFromFolder(entry)
-              allFiles.push(...extractedFiles)
-            } catch (err) {
-              console.error('Failed to extract from folder:', err)
+            if (entry.isFile) {
+              const file = item.getAsFile()
+              if (file) allFiles.push(file)
+            } else if (entry.isDirectory) {
+              try {
+                const extractedFiles = await extractQMDsFromFolder(entry)
+                allFiles.push(...extractedFiles)
+              } catch (err) {
+                console.error('Failed to extract from folder:', err)
+              }
             }
           }
         }

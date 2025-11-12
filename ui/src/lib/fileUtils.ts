@@ -82,11 +82,18 @@ export async function extractQMDsFromFolder(
 
   async function traverseDirectory(dirEntry: FileSystemDirectoryEntry, basePath: string = '') {
     const reader = dirEntry.createReader();
-    const entries = await new Promise<FileSystemEntry[]>((resolve) => {
-      reader.readEntries(resolve);
-    });
 
-    for (const entry of entries) {
+    const allEntries: FileSystemEntry[] = [];
+    let batch: FileSystemEntry[];
+
+    do {
+      batch = await new Promise<FileSystemEntry[]>((resolve) => {
+        reader.readEntries(resolve);
+      });
+      allEntries.push(...batch);
+    } while (batch.length > 0);
+
+    for (const entry of allEntries) {
       const relativePath = basePath ? `${basePath}/${entry.name}` : entry.name;
 
       if (entry.isFile) {
