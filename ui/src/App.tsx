@@ -15,6 +15,7 @@ import { FileDetailModal } from '@/components/FileDetailModal'
 import { ComparisonResultsPage } from '@/components/ComparisonResultsPage'
 import { DeviceSelector } from '@/components/DeviceSelector'
 import { VersionRangeSlider } from '@/components/VersionRangeSlider'
+import { VersionRangeSliderSkeleton } from '@/components/VersionRangeSliderSkeleton'
 import { useFilterPreferences } from '@/hooks/useFilterPreferences'
 import { waitForJobWS } from '@/lib/websocket'
 import type { JobStatus } from '@/lib/websocket'
@@ -34,6 +35,7 @@ function HomePage() {
   const [isProcessing, setIsProcessing] = useState(false)
   const [versionInfo, setVersionInfo] = useState<{ version: string } | null>(null)
   const [availableVersions, setAvailableVersions] = useState<string[]>([])
+  const [isLoadingVersions, setIsLoadingVersions] = useState(true)
   const { preferences, setSelectedDevices, setVersionRange } = useFilterPreferences()
 
   useEffect(() => {
@@ -60,6 +62,8 @@ function HomePage() {
         }
       } catch (error) {
         console.error('Failed to refresh validated versions:', error)
+      } finally {
+        setIsLoadingVersions(false)
       }
     }
 
@@ -327,14 +331,16 @@ function HomePage() {
                   selectedDevices={preferences.selectedDevices}
                   onChange={setSelectedDevices}
                 />
-                {availableVersions.length > 0 && (
+                {isLoadingVersions ? (
+                  <VersionRangeSliderSkeleton />
+                ) : availableVersions.length > 0 ? (
                   <VersionRangeSlider
                     availableVersions={availableVersions}
                     minVersion={preferences.minVersion}
                     maxVersion={preferences.maxVersion}
                     onChange={setVersionRange}
                   />
-                )}
+                ) : null}
               </div>
 
               <FileDropzone

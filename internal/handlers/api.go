@@ -570,13 +570,6 @@ type TreeInfo struct {
 }
 
 func (h *APIHandler) ListValidatedVersions(w http.ResponseWriter, r *http.Request) {
-	if err := h.hashtabService.CheckAndReload(); err != nil {
-		logging.Error(logging.ComponentHandler, "Failed to check/reload hashtables: %v", err)
-	}
-	if err := h.treeService.CheckAndReload(); err != nil {
-		logging.Error(logging.ComponentHandler, "Failed to check/reload trees: %v", err)
-	}
-
 	hashtables := h.hashtabService.GetHashtables()
 	versionSet := make(map[string]bool)
 
@@ -600,6 +593,15 @@ func (h *APIHandler) ListValidatedVersions(w http.ResponseWriter, r *http.Reques
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(response)
+
+	go func() {
+		if err := h.hashtabService.CheckAndReload(); err != nil {
+			logging.Error(logging.ComponentHandler, "Failed to check/reload hashtables: %v", err)
+		}
+		if err := h.treeService.CheckAndReload(); err != nil {
+			logging.Error(logging.ComponentHandler, "Failed to check/reload trees: %v", err)
+		}
+	}()
 }
 
 func (h *APIHandler) ListTrees(w http.ResponseWriter, r *http.Request) {
