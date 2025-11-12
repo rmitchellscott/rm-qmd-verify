@@ -1,21 +1,20 @@
 # reMarkable QMD Verifier
 
-Web application and API for verifying QMD (QML Diff) files against multiple hashtables to determine device and OS compatibility.
+Web application and API for verifying QMD (QML Diff) files against multiple hashtables and QML trees to determine device and OS compatibility.
 
 **Features:**
 - Drag-and-drop web interface for QMD file uploads
-- **Tree validation mode** - Apply QMD diffs to full QML trees for accurate validation
+- Tree validation - Apply QMD diffs to full QML trees for accurate validation
 - Parallel verification against all available hashtables
 - Compatibility matrix showing which OS/device combinations are supported
 - REST API for programmatic access
-- Command-line tool with tree validation support
 
 ## Quick Start
 
 ### Docker Deployment
 
 ```bash
-# Clone the repository (includes hashtables)
+# Clone the repository
 git clone https://github.com/rmitchellscott/rm-qmd-verify.git
 cd rm-qmd-verify
 
@@ -25,36 +24,15 @@ docker-compose up -d
 
 Access the application at http://localhost:8080
 
-**Note:** Docker builds exclude hashtables by design. Mount the hashtables directory when running containers.
-
-### CLI Commands
+### Running Locally
 
 ```bash
-# Start the web server (default command)
-./qmdverify
-./qmdverify serve
-
-# Validate QMD against full QML tree (recommended)
-./qmdverify validate-tree \
-  --qmd patch.qmd \
-  --hashtab ./hashtables/3.22.0.65-rmppm \
-  --tree ./qml-trees/3.22.0.65-rmppm \
-  --workers 4
-
-# JSON output for scripting
-./qmdverify validate-tree --qmd patch.qmd --hashtab ... --tree ... --json
-
-# Sync hashtables from GitHub
-./qmdverify sync
-./qmdverify sync --dir ./custom-dir
-./qmdverify sync --branch main --repo owner/repo
-
-# Show version
-./qmdverify --version
-
-# Show help
-./qmdverify --help
+# Build and run
+go build
+./rm-qmd-verify
 ```
+
+The server starts on port 8080 by default. Access the web interface at http://localhost:8080
 
 ### Configuration
 
@@ -65,13 +43,6 @@ PORT=8080                     # Server port
 HASHTAB_DIR=./hashtables      # Hashtable directory path
 QML_TREE_DIR=./qml-trees      # QML tree directory path (for tree validation)
 ```
-
-**Tree Validation:**
-Place QML trees in `QML_TREE_DIR` with names matching hashtable names. For example:
-- `qml-trees/3.22.0.65-rmppm/` - Tree for OS 3.22.0.65, device rmppm
-- `qml-trees/3.20.0.52-rm2/` - Tree for OS 3.20.0.52, device rm2
-
-When validating, the system automatically matches hashtables to trees by name. If no tree is found for a hashtable, it gracefully falls back to simplified validation for that specific hashtable.
 
 ## Development
 
@@ -181,8 +152,6 @@ Poll `/api/results/{jobId}` for completion:
 }
 ```
 
-Trees are automatically matched to hashtables by name. If no tree is available for a hashtable, it gracefully falls back to simplified validation for that specific hashtable.
-
 ### GET /api/hashtables
 
 List all loaded hashtables.
@@ -214,30 +183,14 @@ hashtables/
 └── rmppm/
 ```
 
-### Getting Hashtables
+## QML Trees
 
-Hashtables are stored in this repository and can be obtained in several ways:
+QML trees are device and OS-specific files representing the QML structure. 
+Place QML trees in `QML_TREE_DIR` with names matching hashtable names. For example:
+- `qml-trees/3.22.0.65-rmppm/` - Tree for OS 3.22.0.65, device rmppm
+- `qml-trees/3.20.0.52-rm2/` - Tree for OS 3.20.0.52, device rm2
 
-**1. Clone the repository** (hashtables included):
-```bash
-git clone https://github.com/rmitchellscott/rm-qmd-verify.git
-cd rm-qmd-verify
-# Hashtables are already in hashtables/
-```
-
-**2. Sync via Docker/Docker Compose** (downloads latest from repository):
-```bash
-# Using docker-compose
-docker-compose exec qmd-check /app/rm-qmd-verify sync --dir /app/hashtables
-
-# Using docker directly
-docker exec rm-qmd-verify /app/rm-qmd-verify sync --dir /app/hashtables
-
-# Sync from different branch
-docker-compose exec qmd-check /app/rm-qmd-verify sync --branch develop
-```
-
-**3. Manual download** from [GitHub](https://github.com/rmitchellscott/rm-qmd-verify/tree/main/hashtables)
+When validating, the system automatically matches hashtables to trees by name.
 
 ### File Format
 

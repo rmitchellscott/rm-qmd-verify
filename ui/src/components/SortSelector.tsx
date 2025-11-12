@@ -14,8 +14,8 @@ interface SortSelectorProps {
 }
 
 const SORT_OPTIONS: Record<SortMethod, string> = {
-  dependency: 'Dependency Order',
-  failures: 'Failures First',
+  dependency: 'Dependencies',
+  failures: 'Failures',
   alphabetical: 'Alphabetical',
 };
 
