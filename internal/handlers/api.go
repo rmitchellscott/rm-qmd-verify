@@ -410,7 +410,16 @@ func (h *APIHandler) Compare(w http.ResponseWriter, r *http.Request) {
 									} else if len(depResult.ProcessErrors) > 0 {
 													depTreeResult.ErrorDetail = "QML failed to apply"
 									} else {
-										depTreeResult.ErrorDetail = fmt.Sprintf("Validation status: %s", depResult.Status)
+										// Provide user-friendly message based on status
+										if depResult.Status == qmd.StatusNotAttempted {
+											if depResult.BlockedBy != "" {
+												depTreeResult.ErrorDetail = fmt.Sprintf("Not validated due to failure of dependency %s", depResult.BlockedBy)
+											} else {
+												depTreeResult.ErrorDetail = "Not attempted due to prior failure"
+											}
+										} else {
+											depTreeResult.ErrorDetail = fmt.Sprintf("Validation status: %s", depResult.Status)
+										}
 									}
 								}
 

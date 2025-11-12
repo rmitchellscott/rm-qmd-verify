@@ -289,22 +289,35 @@ func ValidateWithDependencies(qmdPath string, hashtabPath string, treePath strin
 	output, err := cmd.CombinedOutput()
 	outputStr := string(output)
 
-	// Debug: Log exit status
+	// Log full output for debugging
+	logging.Debug(logging.ComponentQMLDiff, "qmldiff output:\n%s", outputStr)
+
+	// Parse qmldiff output FIRST - even if there were errors, we may have partial results
+	parsed := qmd.ParseQmdiffOutput(outputStr)
+
+	// Check for errors and handle exit codes AFTER parsing
 	if err != nil {
+		exitCode := -1
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			logging.Debug(logging.ComponentQMLDiff, "qmldiff exit code: %d", exitErr.ExitCode())
+			exitCode = exitErr.ExitCode()
+			logging.Debug(logging.ComponentQMLDiff, "qmldiff exit code: %d", exitCode)
 		} else {
 			logging.Debug(logging.ComponentQMLDiff, "qmldiff error: %v", err)
+		}
+
+		// Exit code 1 with hash errors is expected behavior, not a failure
+		if exitCode == 1 && strings.Contains(outputStr, "Hash lookup errors found:") {
+			logging.Debug(logging.ComponentQMLDiff, "qmldiff found hash errors (exit 1)")
+		} else if parsed.HadPanic && len(parsed.HashErrors) == 0 {
+			panicMsg := extractPanicMessage(outputStr)
+			logging.Warn(logging.ComponentQMLDiff, "qmldiff panicked: %s", panicMsg)
+			return createErrorResults(depInfo, fmt.Sprintf("qmldiff panicked: %s", panicMsg)), fmt.Errorf("qmldiff panicked")
+		} else if exitCode > 1 && !parsed.HadPanic {
+			logging.Warn(logging.ComponentQMLDiff, "qmldiff failed (exit %d), attempting to use partial results", exitCode)
 		}
 	} else {
 		logging.Debug(logging.ComponentQMLDiff, "qmldiff exit code: 0 (success)")
 	}
-
-	// Log full output for debugging
-	logging.Debug(logging.ComponentQMLDiff, "qmldiff output:\n%s", outputStr)
-
-	// Parse qmldiff output
-	parsed := qmd.ParseQmdiffOutput(outputStr)
 
 	// Reconcile expected dependencies with actual results
 	results := qmd.ReconcileResults(depInfo, parsed)
@@ -416,6 +429,33 @@ func extractPanicMessage(output string) string {
 		}
 	}
 	return "unknown panic"
+}
+
+// createErrorResults creates ValidationResults for all files when qmldiff fails
+// Marks root file as failed with error message, and all dependencies as not attempted
+func createErrorResults(depInfo *qmd.DependencyInfo, errorMsg string) map[string]*qmd.ValidationResult {
+	results := make(map[string]*qmd.ValidationResult)
+
+	rootFile := filepath.Base(depInfo.RootFile)
+	results[rootFile] = &qmd.ValidationResult{
+		Path:          rootFile,
+		Status:        qmd.StatusFailed,
+		Compatible:    false,
+		ProcessErrors: []string{errorMsg},
+		Position:      -1,
+	}
+
+	for i, depPath := range depInfo.ExpectedLoads {
+		results[depPath] = &qmd.ValidationResult{
+			Path:          depPath,
+			Status:        qmd.StatusNotAttempted,
+			Compatible:    false,
+			ProcessErrors: []string{"not attempted due to prior failure"},
+			Position:      i,
+		}
+	}
+
+	return results
 }
 
 // countFilesInOutput counts files mentioned in qmldiff output

@@ -72,7 +72,11 @@ export function DependencyResults({ dependencyResults, osVersion, device }: Depe
                       <TooltipTrigger>
                         <CircleMinus className="h-5 w-5 text-gray-400 inline-block" />
                       </TooltipTrigger>
-                      <TooltipContent>Not attempted due to prior failure</TooltipContent>
+                      <TooltipContent>
+                        {result.blocked_by
+                          ? `Not validated due to failure of dependency ${result.blocked_by}`
+                          : 'Not attempted due to prior failure'}
+                      </TooltipContent>
                     </Tooltip>
                   )}
                 </TableCell>

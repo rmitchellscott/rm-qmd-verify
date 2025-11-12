@@ -20,6 +20,7 @@ export interface ValidationResult {
   }>;
   process_errors?: string[];
   position?: number;
+  blocked_by?: string;
 }
 
 export interface ComparisonResult {

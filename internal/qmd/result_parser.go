@@ -27,6 +27,7 @@ type ValidationResult struct {
 	ProcessErrors    []string    `json:"process_errors,omitempty"`
 	QMLFilesModified []string    `json:"qml_files_modified,omitempty"`
 	Position         int         `json:"position"` // Position in LOAD order
+	BlockedBy        string      `json:"blocked_by,omitempty"` // File that caused validation to stop
 }
 
 // HashError represents a hash lookup error
@@ -44,6 +45,7 @@ type ParsedOutput struct {
 	FailureFile      string                  // First file that caused failure (if any)
 	HadPanic         bool                    // Whether qmldiff panicked
 	PanicMessage     string                  // The panic message if it panicked
+	PanicFile        string                  // The file being processed when panic occurred
 }
 
 // ParseQmdiffOutput parses the output from qmldiff CLI
@@ -69,20 +71,49 @@ func ParseQmdiffOutput(output string) *ParsedOutput {
 	// File not found error: "Cannot read file <path>"
 	fileNotFoundRegex := regexp.MustCompile(`Cannot read file (.+\.qmd)`)
 
-	// Panic detection: "thread 'main' panicked at"
-	panicRegex := regexp.MustCompile(`thread '.+' panicked at`)
+	// Panic detection: "panicked at"
+	panicRegex := regexp.MustCompile(`panicked at`)
 
 	lines := strings.Split(output, "\n")
 
 	// First check if there's a panic in the entire output
 	if panicRegex.MatchString(output) {
 		result.HadPanic = true
-		for _, line := range lines {
+		panicLineIdx := -1
+		for i, line := range lines {
 			if strings.Contains(line, "panicked at") {
 				result.PanicMessage = strings.TrimSpace(line)
+				panicLineIdx = i
 				break
 			}
 		}
+
+		// Look forward from panic to find the file mentioned in the error message
+		// Panic messages typically have "Cannot resolve hash ... required by <file>!" on the next line
+		if panicLineIdx >= 0 && panicLineIdx < len(lines)-1 {
+			requiredByRegex := regexp.MustCompile(`required by (.+\.qmd)`)
+			// Check the next few lines after the panic
+			for i := panicLineIdx + 1; i < len(lines) && i < panicLineIdx+5; i++ {
+				if matches := requiredByRegex.FindStringSubmatch(lines[i]); len(matches) == 2 {
+					result.PanicFile = filepath.Base(matches[1])
+					logging.Debug(logging.ComponentQMD, "Panic occurred while processing file: %s", result.PanicFile)
+					break
+				}
+			}
+		}
+
+		// If we didn't find a "required by" line, fall back to looking backwards for "Reading diff"
+		if result.PanicFile == "" && panicLineIdx > 0 {
+			readingDiffRegex := regexp.MustCompile(`Reading diff (.+\.qmd)`)
+			for i := panicLineIdx - 1; i >= 0; i-- {
+				if matches := readingDiffRegex.FindStringSubmatch(lines[i]); len(matches) == 2 {
+					result.PanicFile = filepath.Base(matches[1])
+					logging.Debug(logging.ComponentQMD, "Panic occurred while processing file (from Reading diff): %s", result.PanicFile)
+					break
+				}
+			}
+		}
+
 		logging.Debug(logging.ComponentQMD, "Detected qmldiff panic: %s", result.PanicMessage)
 	}
 
@@ -166,8 +197,8 @@ func ReconcileResults(depInfo *DependencyInfo, parsedOutput *ParsedOutput) map[s
 	if parsedOutput.HadPanic {
 		hasHashErrors := len(parsedOutput.HashErrors) > 0
 
-		if !hasHashErrors {
-			// Fatal panic with no parseable hash errors - bail out
+		if !hasHashErrors && parsedOutput.PanicFile == "" {
+			// Fatal panic with no parseable hash errors and no identified file - bail out
 			rootResult.Status = StatusFailed
 			rootResult.Compatible = false
 			rootResult.ProcessErrors = append(rootResult.ProcessErrors, "qmldiff panicked: "+parsedOutput.PanicMessage)
@@ -181,6 +212,7 @@ func ReconcileResults(depInfo *DependencyInfo, parsedOutput *ParsedOutput) map[s
 					Position:   i,
 					Status:     StatusNotAttempted,
 					Compatible: false,
+					BlockedBy:  rootFileName,
 				}
 			}
 
@@ -188,8 +220,12 @@ func ReconcileResults(depInfo *DependencyInfo, parsedOutput *ParsedOutput) map[s
 			return results
 		}
 
-		// Has hash errors from panic - continue processing them normally
-		logging.Debug(logging.ComponentQMD, "Panic occurred but hash errors were collected, continuing with normal processing")
+		// Has hash errors or identified panic file - continue processing
+		if parsedOutput.PanicFile != "" {
+			logging.Debug(logging.ComponentQMD, "Panic occurred in file %s, will mark it as failed", parsedOutput.PanicFile)
+		} else {
+			logging.Debug(logging.ComponentQMD, "Panic occurred but hash errors were collected, continuing with normal processing")
+		}
 	}
 
 	// Debug: Log path matching details for root file
@@ -253,6 +289,14 @@ func ReconcileResults(depInfo *DependencyInfo, parsedOutput *ParsedOutput) map[s
 		rootResult.Status = StatusFailed
 	}
 
+	// Check if root file is the panic file
+	if parsedOutput.PanicFile != "" && parsedOutput.PanicFile == rootBasename {
+		rootResult.Status = StatusFailed
+		rootResult.Compatible = false
+		rootResult.ProcessErrors = append(rootResult.ProcessErrors, "qmldiff panicked: "+parsedOutput.PanicMessage)
+		logging.Debug(logging.ComponentQMD, "  Root file is the panic file - marking as failed")
+	}
+
 	// Log final root file result
 	logging.Debug(logging.ComponentQMD, "  Final root result: Compatible=%v, Status=%s, HashErrors=%d, ProcessErrors=%d",
 		rootResult.Compatible, rootResult.Status, len(rootResult.HashErrors), len(rootResult.ProcessErrors))
@@ -278,6 +322,7 @@ func ReconcileResults(depInfo *DependencyInfo, parsedOutput *ParsedOutput) map[s
 		if failurePoint != -1 && i > failurePoint {
 			result.Status = StatusNotAttempted
 			result.Compatible = false
+			result.BlockedBy = depInfo.ExpectedLoads[failurePoint]
 			results[expectedFile] = result
 			logging.Debug(logging.ComponentQMD, "File not attempted: %s (stopped at position %d)", expectedFile, failurePoint)
 			continue
@@ -291,12 +336,26 @@ func ReconcileResults(depInfo *DependencyInfo, parsedOutput *ParsedOutput) map[s
 		isFailure := parsedOutput.FailureFile == expectedFile ||
 			parsedOutput.FailureFile == resolvedPath
 
+		// Check if this file is the panic file
+		expectedFileBase := filepath.Base(expectedFile)
+		isPanicFile := parsedOutput.PanicFile != "" && parsedOutput.PanicFile == expectedFileBase
+
+		// Debug logging for panic file matching
+		logging.Debug(logging.ComponentQMD, "Dependency check: expectedFile='%s', expectedFileBase='%s', PanicFile='%s', isPanicFile=%v, isFailure=%v, wasProcessed=%v",
+			expectedFile, expectedFileBase, parsedOutput.PanicFile, isPanicFile, isFailure, wasProcessed)
+
 		if isFailure {
 			failurePoint = i
 			result.Status = StatusFailed
 			result.Compatible = false
 			result.ProcessErrors = append(result.ProcessErrors, "LOAD failed: Cannot read file")
 			logging.Debug(logging.ComponentQMD, "File caused failure: %s", expectedFile)
+		} else if isPanicFile {
+			failurePoint = i
+			result.Status = StatusFailed
+			result.Compatible = false
+			result.ProcessErrors = append(result.ProcessErrors, "qmldiff panicked: "+parsedOutput.PanicMessage)
+			logging.Debug(logging.ComponentQMD, "File caused panic: %s", expectedFile)
 		} else if wasProcessed {
 			// Check for errors - try multiple path variations
 			// Try exact match with expected file (relative path)
