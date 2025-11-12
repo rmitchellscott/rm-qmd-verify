@@ -333,7 +333,33 @@ func ReconcileResults(depInfo *DependencyInfo, parsedOutput *ParsedOutput) map[s
 			}
 			result.Status = StatusFailed
 			result.Compatible = false
-			result.ProcessErrors = append(result.ProcessErrors, "qmldiff panicked: "+parsedOutput.PanicMessage)
+
+			if hashErrs, exists := parsedOutput.HashErrors[expectedFile]; exists {
+				result.HashErrors = hashErrs
+			}
+			if hashErrs, exists := parsedOutput.HashErrors[resolvedPath]; exists {
+				result.HashErrors = append(result.HashErrors, hashErrs...)
+			}
+			if len(result.HashErrors) == 0 {
+				for errorPath, hashErrs := range parsedOutput.HashErrors {
+					if strings.HasSuffix(errorPath, expectedFile) {
+						result.HashErrors = append(result.HashErrors, hashErrs...)
+						break
+					}
+				}
+			}
+
+			if procErrs, exists := parsedOutput.ProcessErrors[expectedFile]; exists {
+				result.ProcessErrors = append(result.ProcessErrors, procErrs...)
+			}
+			if procErrs, exists := parsedOutput.ProcessErrors[resolvedPath]; exists {
+				result.ProcessErrors = append(result.ProcessErrors, procErrs...)
+			}
+
+			if len(result.HashErrors) == 0 && len(result.ProcessErrors) == 0 {
+				result.ProcessErrors = append(result.ProcessErrors, "qmldiff panicked: "+parsedOutput.PanicMessage)
+			}
+
 			logging.Debug(logging.ComponentQMD, "File caused panic: %s (blocking=%v)", expectedFile, !hasCollectedErrors)
 		} else if wasProcessed {
 			if hashErrs, exists := parsedOutput.HashErrors[expectedFile]; exists {

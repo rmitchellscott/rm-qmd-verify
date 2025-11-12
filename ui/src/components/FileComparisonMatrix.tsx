@@ -110,7 +110,7 @@ export function FileComparisonMatrix({
             <TooltipTrigger>
               <CheckCircle2 className="h-5 w-5 text-green-600 inline-block" />
             </TooltipTrigger>
-            <TooltipContent>All versions compatible</TooltipContent>
+            <TooltipContent>All versions compatible • Click row to view details</TooltipContent>
           </Tooltip>
         )}
         {status === 'all-incompatible' && (
@@ -118,7 +118,7 @@ export function FileComparisonMatrix({
             <TooltipTrigger>
               <XCircle className="h-5 w-5 text-red-600 inline-block" />
             </TooltipTrigger>
-            <TooltipContent>All versions incompatible</TooltipContent>
+            <TooltipContent>All versions incompatible • Click row to view details</TooltipContent>
           </Tooltip>
         )}
         {status === 'mixed' && (
@@ -126,11 +126,16 @@ export function FileComparisonMatrix({
             <TooltipTrigger>
               <AlertCircle className="h-5 w-5 text-yellow-600 inline-block" />
             </TooltipTrigger>
-            <TooltipContent>Mixed results across versions</TooltipContent>
+            <TooltipContent>Mixed results across versions • Click row to view details</TooltipContent>
           </Tooltip>
         )}
         {status === 'no-data' && (
-          <span className="text-muted-foreground">—</span>
+          <Tooltip>
+            <TooltipTrigger>
+              <span className="text-muted-foreground">—</span>
+            </TooltipTrigger>
+            <TooltipContent>No data • Click row to view details</TooltipContent>
+          </Tooltip>
         )}
       </TableCell>
     );
@@ -146,33 +151,38 @@ export function FileComparisonMatrix({
         className="cursor-pointer hover:bg-muted/50"
         onClick={() => onRowClick(filename)}
       >
-        <TableCell className="font-medium">
-          <div className="flex items-center gap-2" style={{ paddingLeft: isRoot ? 0 : '2rem' }}>
-            {showChevron && (
-              <button
-                onClick={(e) => {
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <TableCell
+              className="font-medium"
+              onClick={(e) => {
+                if (showChevron) {
                   e.stopPropagation();
                   toggleExpanded(filename);
-                }}
-                className="hover:bg-muted rounded p-0.5"
-              >
-                {isExpanded ? (
-                  <ChevronDown className="h-4 w-4" />
-                ) : (
-                  <ChevronRight className="h-4 w-4" />
+                }
+              }}
+              style={{ cursor: showChevron ? 'pointer' : undefined }}
+            >
+              <div className="flex items-center gap-2 w-full" style={{ paddingLeft: isRoot ? 0 : '2rem' }}>
+                {showChevron && (
+                  <>
+                    {isExpanded ? (
+                      <ChevronDown className="h-4 w-4 flex-shrink-0" />
+                    ) : (
+                      <ChevronRight className="h-4 w-4 flex-shrink-0" />
+                    )}
+                  </>
                 )}
-              </button>
-            )}
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span className="truncate block max-w-xs">
+                <span className="truncate block">
                   {filename}
                 </span>
-              </TooltipTrigger>
-              <TooltipContent>Click to see detailed version compatibility</TooltipContent>
-            </Tooltip>
-          </div>
-        </TableCell>
+              </div>
+            </TableCell>
+          </TooltipTrigger>
+          <TooltipContent>
+            {showChevron ? 'Click to expand/collapse dependencies' : 'Click to view compatibility matrix'}
+          </TooltipContent>
+        </Tooltip>
         {deviceKeys.map(device => renderDeviceCell(filename, device))}
       </TableRow>
     );
