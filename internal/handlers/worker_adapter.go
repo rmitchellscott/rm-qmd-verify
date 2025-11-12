@@ -133,7 +133,6 @@ func (h *APIHandler) validateAgainstAllTreesWithWorkers(
 				// Process results for each file
 				logging.Debug(logging.ComponentHandler, "Taking success path for %s, processing %d files", htName, len(qmdPaths))
 
-				// Debug: log all keys in batchResult.Results
 				resultKeys := make([]string, 0, len(batchResult.Results))
 				for key := range batchResult.Results {
 					resultKeys = append(resultKeys, key)

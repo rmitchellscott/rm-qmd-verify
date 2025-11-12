@@ -52,6 +52,7 @@ lib/libqmldiff.a
 
 # Temporary files
 /tmp/
+*.bak
 
 # Dev
 docker-compose.dev.yaml

@@ -126,7 +126,6 @@ func (s *Service) CompareAgainstAllWithProgress(qmdContent []byte, jobStore *job
 		jobStore.UpdateProgress(jobID, 10)
 	}
 
-	// Save QMD to temporary file for qmldiff processing
 	tempQMD, err := SaveUploadedFile(strings.NewReader(string(qmdContent)), "temp.qmd")
 	if err != nil {
 		if jobStore != nil && jobID != "" {
@@ -135,11 +134,6 @@ func (s *Service) CompareAgainstAllWithProgress(qmdContent []byte, jobStore *job
 		return nil, fmt.Errorf("failed to save QMD file: %w", err)
 	}
 	defer os.RemoveAll(filepath.Dir(tempQMD))
-
-	// For now, use a simplified approach: just report that the QMD was processed
-	// Full tree validation requires a QML tree which is not provided in hash-only mode
-	// This maintains backwards compatibility with the existing API
-	// Users should use the new tree validation API for full validation
 
 	if jobStore != nil && jobID != "" {
 		jobStore.UpdateWithOperation(jobID, "running", "Comparing against hashtables", nil, "comparing")
@@ -151,8 +145,6 @@ func (s *Service) CompareAgainstAllWithProgress(qmdContent []byte, jobStore *job
 	var mu sync.Mutex
 	completed := 0
 
-	// For hash-only mode, we'll use a simplified check
-	// We can't extract hashes without the parser, so we'll report based on hashtable presence
 	for i, ht := range hashtables {
 		wg.Add(1)
 		go func(idx int, hashtable *hashtab.Hashtab) {
@@ -204,7 +196,6 @@ func (s *Service) ValidateAgainstAllTrees(qmdContents [][]byte, filenames []stri
 		jobStore.UpdateProgress(jobID, 10)
 	}
 
-	// Initialize results map
 	results := make(map[string][]TreeComparisonResult)
 	for _, filename := range filenames {
 		results[filename] = make([]TreeComparisonResult, 0, len(hashtables))
@@ -213,17 +204,13 @@ func (s *Service) ValidateAgainstAllTrees(qmdContents [][]byte, filenames []stri
 	totalHashtables := len(hashtables)
 	completedHashtables := 0
 
-	// Iterate hashtables SEQUENTIALLY to avoid race condition
-	// qmldiff has GLOBAL hashtab state, so only one can be loaded at a time
 	for _, hashtable := range hashtables {
 		logging.Info(logging.ComponentQMLDiff, "Processing hashtable %s (%d/%d)",
 			hashtable.Name, completedHashtables+1, totalHashtables)
 
-		// Try to find matching tree
 		tree, treeFound := s.treeService.GetTreeByName(hashtable.Name)
 
 		if !treeFound {
-			// No tree available - fall back to hash-only mode for all files
 			logging.Info(logging.ComponentQMLDiff, "No tree found for %s, skipping tree validation", hashtable.Name)
 
 			for _, filename := range filenames {
@@ -247,13 +234,11 @@ func (s *Service) ValidateAgainstAllTrees(qmdContents [][]byte, filenames []stri
 			continue
 		}
 
-		// Create dedicated temp directory for this hashtable batch
 		tempDir, err := os.MkdirTemp("", "qmd-batch-*")
 		if err != nil {
 			return nil, fmt.Errorf("failed to create temp dir for hashtable %s: %w", hashtable.Name, err)
 		}
 
-		// Save all QMD files to temp directory
 		qmdPaths := make([]string, len(qmdContents))
 		for i, content := range qmdContents {
 			qmdPath := filepath.Join(tempDir, filenames[i])
@@ -277,7 +262,6 @@ func (s *Service) ValidateAgainstAllTrees(qmdContents [][]byte, filenames []stri
 			return nil, fmt.Errorf("batch validation failed for hashtable %s: %w", hashtable.Name, err)
 		}
 
-		// Process results for each file
 		for i, filename := range filenames {
 			qmdPath := qmdPaths[i]
 
@@ -289,7 +273,6 @@ func (s *Service) ValidateAgainstAllTrees(qmdContents [][]byte, filenames []stri
 				TreeValidationUsed: true,
 			}
 
-			// Check if this file had an error
 			if fileErr, hasError := batchResult.Errors[qmdPath]; hasError {
 				result.Compatible = false
 				result.ErrorDetail = fmt.Sprintf("validation error: %v", fileErr)
@@ -300,11 +283,9 @@ func (s *Service) ValidateAgainstAllTrees(qmdContents [][]byte, filenames []stri
 				result.FilesModified = treeResult.FilesModified
 				result.FilesWithErrors = treeResult.FilesWithErrors
 
-				// Check if validation passed
 				if treeResult.HasHashErrors || treeResult.FilesWithErrors > 0 {
 					result.Compatible = false
 
-					// Map failed hashes to positions in the QMD file
 					if len(treeResult.FailedHashes) > 0 {
 						qmdStr := string(qmdContents[i])
 						positions := qmd.FindHashPositions(qmdStr, treeResult.FailedHashes)
@@ -321,7 +302,6 @@ func (s *Service) ValidateAgainstAllTrees(qmdContents [][]byte, filenames []stri
 						filename, hashtable.Name, result.FilesProcessed, result.FilesModified)
 				}
 			} else {
-				// No result or error - this shouldn't happen
 				result.Compatible = false
 				result.ErrorDetail = "no validation result received"
 			}
