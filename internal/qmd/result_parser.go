@@ -1,6 +1,7 @@
 package qmd
 
 import (
+	"fmt"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -58,12 +59,16 @@ func ParseQmdiffOutput(output string) *ParsedOutput {
 	}
 
 	hashErrorRegex := regexp.MustCompile(`(?:(.+\.qmd) - Cannot resolve hash (\d+)|Cannot resolve hash (\d+) required by (.+\.qmd))`)
+	lexerErrorRegex := regexp.MustCompile(`Lexer error at position (\d+) \(line (\d+)\): (.+)`)
 	processErrorRegex := regexp.MustCompile(`\(On behalf of '(.+\.qmd)'\): (.+)`)
 	writtenFileRegex := regexp.MustCompile(`Written file (.+\.qml) - (\d+) diff\(s\) applied`)
 	fileNotFoundRegex := regexp.MustCompile(`Cannot read file (.+\.qmd)`)
 	panicRegex := regexp.MustCompile(`panicked at`)
 
 	lines := strings.Split(output, "\n")
+
+	var currentFile string
+	readingDiffRegex := regexp.MustCompile(`Reading diff (.+\.qmd)`)
 
 	if panicRegex.MatchString(output) {
 		result.HadPanic = true
@@ -103,6 +108,22 @@ func ParseQmdiffOutput(output string) *ParsedOutput {
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
+
+		if matches := readingDiffRegex.FindStringSubmatch(line); len(matches) == 2 {
+			currentFile = filepath.Base(matches[1])
+			logging.Debug(logging.ComponentQMD, "Currently processing file: %s", currentFile)
+		}
+
+		if matches := lexerErrorRegex.FindStringSubmatch(line); len(matches) == 4 {
+			errorMsg := fmt.Sprintf("Lexer error at position %s (line %s): %s", matches[1], matches[2], matches[3])
+			if currentFile != "" {
+				result.ProcessErrors[currentFile] = append(result.ProcessErrors[currentFile], errorMsg)
+				result.ProcessedFiles[currentFile] = true
+				logging.Debug(logging.ComponentQMD, "Parsed lexer error from %s: %s", currentFile, errorMsg)
+			} else {
+				logging.Debug(logging.ComponentQMD, "Parsed lexer error but no current file context: %s", errorMsg)
+			}
+		}
 
 		if matches := hashErrorRegex.FindStringSubmatch(line); len(matches) == 5 {
 			var hashID uint64
@@ -168,8 +189,9 @@ func ReconcileResults(depInfo *DependencyInfo, parsedOutput *ParsedOutput) map[s
 
 	if parsedOutput.HadPanic {
 		hasHashErrors := len(parsedOutput.HashErrors) > 0
+		hasLexerErrors := len(parsedOutput.ProcessErrors) > 0
 
-		if !hasHashErrors && parsedOutput.PanicFile == "" {
+		if !hasHashErrors && !hasLexerErrors && parsedOutput.PanicFile == "" {
 			rootResult.Status = StatusFailed
 			rootResult.Compatible = false
 			rootResult.ProcessErrors = append(rootResult.ProcessErrors, "qmldiff panicked: "+parsedOutput.PanicMessage)
@@ -193,7 +215,8 @@ func ReconcileResults(depInfo *DependencyInfo, parsedOutput *ParsedOutput) map[s
 		if parsedOutput.PanicFile != "" {
 			logging.Debug(logging.ComponentQMD, "Panic occurred in file %s, will mark it as failed", parsedOutput.PanicFile)
 		} else {
-			logging.Debug(logging.ComponentQMD, "Panic occurred but hash errors were collected, continuing with normal processing")
+			logging.Debug(logging.ComponentQMD, "Panic occurred but errors were collected (hash: %d, lexer/process: %d), continuing with normal processing",
+				len(parsedOutput.HashErrors), len(parsedOutput.ProcessErrors))
 		}
 	}
 
@@ -304,11 +327,14 @@ func ReconcileResults(depInfo *DependencyInfo, parsedOutput *ParsedOutput) map[s
 			result.ProcessErrors = append(result.ProcessErrors, "LOAD failed: Cannot read file")
 			logging.Debug(logging.ComponentQMD, "File caused failure: %s", expectedFile)
 		} else if isPanicFile {
-			failurePoint = i
+			hasCollectedErrors := len(parsedOutput.HashErrors) > 0 || len(parsedOutput.ProcessErrors) > 0
+			if !hasCollectedErrors {
+				failurePoint = i
+			}
 			result.Status = StatusFailed
 			result.Compatible = false
 			result.ProcessErrors = append(result.ProcessErrors, "qmldiff panicked: "+parsedOutput.PanicMessage)
-			logging.Debug(logging.ComponentQMD, "File caused panic: %s", expectedFile)
+			logging.Debug(logging.ComponentQMD, "File caused panic: %s (blocking=%v)", expectedFile, !hasCollectedErrors)
 		} else if wasProcessed {
 			if hashErrs, exists := parsedOutput.HashErrors[expectedFile]; exists {
 				result.HashErrors = hashErrs
