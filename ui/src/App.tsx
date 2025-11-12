@@ -283,6 +283,8 @@ function HomePage() {
     setFileStatuses(new Map())
     setFileResults(new Map())
     setSelectedFileForModal(null)
+    setSelectedDevices(['rm1', 'rm2', 'rmpp', 'rmppm'])
+    setVersionRange(null, null)
   }
 
   const handleRemoveFile = (index: number) => {
