@@ -8,8 +8,6 @@ Web application and API for verifying QMD (QML Diff) files against multiple hash
 - Parallel verification against all available hashtables
 - Compatibility matrix showing which OS/device combinations are supported
 - REST API for programmatic access
-- Real-time progress updates via WebSocket
-- Background job queue for async processing
 - Batch file upload and validation
 - Automatic dependency tracking for QMD files
 - Hot reload for hashtables and QML trees
@@ -315,7 +313,7 @@ docker run -d -p 8080:8080 \
 
 - **Backend:** Go with Chi router
 - **Frontend:** React + TypeScript + Vite + shadcn/ui
-- **QMLDiff:** Integration via [qmldiff](https://github.com/rmitchellscott/qmldiff) CLI binary (Rust)
+- **QMLDiff:** Integration via [qmldiff](https://github.com/asivery/qmldiff) CLI binary
 - **Validation:** Worker pool parallelization for efficient tree validation
 - **Real-time Updates:** WebSocket connections for live job progress
 - **Job Processing:** Background job queue with concurrent validation support
