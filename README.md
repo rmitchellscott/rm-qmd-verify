@@ -88,7 +88,7 @@ npm run dev          # Development server
 npm run build        # Production build
 ```
 
-## API Referenc
+## API Reference
 
 ### POST /api/validate/tree
 
