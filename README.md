@@ -64,7 +64,7 @@ MAX_CONCURRENT_VALIDATIONS=15          # Max parallel validations (default: 15)
 go mod download
 
 # Build qmldiff CLI binary
-git clone --branch collect-hash-errors https://github.com/rmitchellscott/qmldiff
+git clone https://github.com/asivery/qmldiff.git
 cd qmldiff
 cargo build --release --bin qmldiff
 cd ..

@@ -7,8 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/rmitchellscott/rm-qmd-verify/internal/logging"
@@ -75,7 +73,7 @@ func ValidateMultipleQMDsWithCLI(qmdPaths []string, hashtabPath string, treePath
 }
 
 // ValidateMultipleQMDsWithCLIAndCopy creates a temp directory with tree copy and validates QMDs
-// This matches the behavior of the CGO version where we need a mutable tree
+// Uses two-phase validation: check-compatibility for hashes, then apply-diffs for structure
 func ValidateMultipleQMDsWithCLIAndCopy(qmdPaths []string, hashtabPath string, treePath string, qmldiffBinary string) (*BatchTreeValidationResult, error) {
 	result := &BatchTreeValidationResult{
 		Results: make(map[string]*TreeValidationResult),
@@ -85,6 +83,36 @@ func ValidateMultipleQMDsWithCLIAndCopy(qmdPaths []string, hashtabPath string, t
 	for _, qmdPath := range qmdPaths {
 		logging.Info(logging.ComponentQMLDiff, "Validating QMD via CLI with tree copy: %s", qmdPath)
 
+		treeResult := &TreeValidationResult{
+			Errors: make([]TreeValidationError, 0),
+		}
+
+		// Phase 1: Check hash compatibility
+		compatResult, err := CheckCompatibility([]string{qmdPath}, hashtabPath, qmldiffBinary)
+		if err != nil {
+			result.Errors[qmdPath] = fmt.Errorf("check-compatibility failed: %w", err)
+			continue
+		}
+
+		if compatResult.HasErrors {
+			// Hash errors found - record them and continue to next file
+			logging.Info(logging.ComponentQMLDiff, "check-compatibility found %d hash errors for %s", compatResult.TotalErrors, qmdPath)
+			treeResult.HasHashErrors = true
+			treeResult.FilesWithErrors = 1
+			for filePath, hashIDs := range compatResult.HashErrors {
+				for _, hashID := range hashIDs {
+					treeResult.FailedHashes = append(treeResult.FailedHashes, hashID)
+					treeResult.Errors = append(treeResult.Errors, TreeValidationError{
+						FilePath: filePath,
+						Error:    fmt.Sprintf("Cannot resolve hash %d", hashID),
+					})
+				}
+			}
+			result.Results[qmdPath] = treeResult
+			continue
+		}
+
+		// Phase 2: Run apply-diffs for structural validation
 		tempDir, err := os.MkdirTemp("", "qmldiff-tree-*")
 		if err != nil {
 			result.Errors[qmdPath] = fmt.Errorf("failed to create temp dir: %w", err)
@@ -102,7 +130,6 @@ func ValidateMultipleQMDsWithCLIAndCopy(qmdPaths []string, hashtabPath string, t
 			qmldiffBinary,
 			"apply-diffs",
 			"--hashtab", hashtabPath,
-			"--collect-hash-errors",
 			treeOutput,
 			treeOutput, // Same path - modify in place
 			qmdPath,
@@ -111,19 +138,13 @@ func ValidateMultipleQMDsWithCLIAndCopy(qmdPaths []string, hashtabPath string, t
 		output, err := cmd.CombinedOutput()
 		outputStr := string(output)
 
-		treeResult := &TreeValidationResult{
-			Errors: make([]TreeValidationError, 0),
-		}
-
 		if err != nil {
 			exitCode := -1
 			if exitErr, ok := err.(*exec.ExitError); ok {
 				exitCode = exitErr.ExitCode()
 			}
 
-			if exitCode == 1 && strings.Contains(outputStr, "Hash lookup errors found:") {
-				logging.Info(logging.ComponentQMLDiff, "qmldiff found hash errors for %s", qmdPath)
-			} else if strings.Contains(outputStr, "panicked at") || strings.Contains(outputStr, "SIGABRT") {
+			if strings.Contains(outputStr, "panicked at") || strings.Contains(outputStr, "SIGABRT") {
 				logging.Warn(logging.ComponentQMLDiff, "qmldiff panicked for %s: %s", qmdPath, outputStr)
 				result.Errors[qmdPath] = fmt.Errorf("qmldiff panicked: %s", extractPanicMessage(outputStr))
 				continue
@@ -145,22 +166,6 @@ func ValidateMultipleQMDsWithCLIAndCopy(qmdPaths []string, hashtabPath string, t
 		treeResult.FilesProcessed = modifiedCount
 		treeResult.FilesModified = modifiedCount
 		treeResult.FilesWithErrors = 0
-
-		hashErrorRegex := regexp.MustCompile(`Cannot resolve hash (\d+) required by (.+)`)
-		for _, line := range strings.Split(outputStr, "\n") {
-			if matches := hashErrorRegex.FindStringSubmatch(line); len(matches) == 3 {
-				hashID, _ := strconv.ParseUint(matches[1], 10, 64)
-				treeResult.FailedHashes = append(treeResult.FailedHashes, hashID)
-				treeResult.Errors = append(treeResult.Errors, TreeValidationError{
-					FilePath: matches[2],
-					Error:    fmt.Sprintf("Cannot resolve hash %s", matches[1]),
-				})
-			}
-		}
-		if len(treeResult.FailedHashes) > 0 {
-			treeResult.HasHashErrors = true
-			treeResult.FilesWithErrors++
-		}
 
 		result.Results[qmdPath] = treeResult
 
@@ -211,11 +216,110 @@ func copyFile(src, dst string) error {
 	return err
 }
 
-// ValidateWithDependencies validates a single QMD file and tracks all LOAD dependencies
-// Returns per-file results including files that were not attempted due to prior failures
+// CheckCompatibility runs qmldiff check-compatibility to validate hash compatibility
+// This is Phase 1 of two-phase validation - checks that all hashes exist in the hashtab
+func CheckCompatibility(qmdPaths []string, hashtabPath string, qmldiffBinary string) (*qmd.CheckCompatibilityResult, error) {
+	args := []string{"check-compatibility", hashtabPath}
+	args = append(args, qmdPaths...)
+
+	cmd := exec.Command(qmldiffBinary, args...)
+	logging.Debug(logging.ComponentQMLDiff, "check-compatibility command: %s", strings.Join(cmd.Args, " "))
+
+	output, err := cmd.CombinedOutput()
+	outputStr := string(output)
+
+	logging.Debug(logging.ComponentQMLDiff, "check-compatibility output:\n%s", outputStr)
+
+	result := qmd.ParseCheckCompatibilityOutput(outputStr)
+
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode := exitErr.ExitCode()
+			logging.Debug(logging.ComponentQMLDiff, "check-compatibility exit code: %d", exitCode)
+			if exitCode == 1 {
+				// Exit 1 = hash errors found (expected behavior)
+				result.HasErrors = true
+			} else {
+				// Other error
+				return nil, fmt.Errorf("check-compatibility failed (exit %d): %w", exitCode, err)
+			}
+		} else {
+			return nil, fmt.Errorf("check-compatibility failed: %w", err)
+		}
+	} else {
+		logging.Debug(logging.ComponentQMLDiff, "check-compatibility exit code: 0 (no errors)")
+	}
+
+	return result, nil
+}
+
+// reconcileHashErrors converts CheckCompatibilityResult to ValidationResult map
+func reconcileHashErrors(depInfo *qmd.DependencyInfo, compatResult *qmd.CheckCompatibilityResult) map[string]*qmd.ValidationResult {
+	results := make(map[string]*qmd.ValidationResult)
+
+	rootFileName := filepath.Base(depInfo.RootFile)
+	rootResult := &qmd.ValidationResult{
+		Path:       rootFileName,
+		Status:     qmd.StatusValidated,
+		Compatible: true,
+		Position:   -1,
+	}
+
+	// Check if root file has hash errors
+	for filePath, hashIDs := range compatResult.HashErrors {
+		fileBase := filepath.Base(filePath)
+		if fileBase == rootFileName || strings.HasSuffix(filePath, rootFileName) {
+			rootResult.Status = qmd.StatusFailed
+			rootResult.Compatible = false
+			for _, hashID := range hashIDs {
+				rootResult.HashErrors = append(rootResult.HashErrors, qmd.HashError{
+					HashID: hashID,
+					Error:  fmt.Sprintf("Cannot resolve hash %d", hashID),
+				})
+			}
+		}
+	}
+	results[rootFileName] = rootResult
+
+	// Process expected LOAD dependencies
+	for i, expectedFile := range depInfo.ExpectedLoads {
+		result := &qmd.ValidationResult{
+			Path:       expectedFile,
+			Position:   i,
+			Status:     qmd.StatusValidated,
+			Compatible: true,
+		}
+
+		// Check if this file has hash errors
+		expectedFileBase := filepath.Base(expectedFile)
+		for filePath, hashIDs := range compatResult.HashErrors {
+			fileBase := filepath.Base(filePath)
+			if fileBase == expectedFileBase || strings.HasSuffix(filePath, expectedFile) {
+				result.Status = qmd.StatusFailed
+				result.Compatible = false
+				for _, hashID := range hashIDs {
+					result.HashErrors = append(result.HashErrors, qmd.HashError{
+						HashID: hashID,
+						Error:  fmt.Sprintf("Cannot resolve hash %d", hashID),
+					})
+				}
+				break
+			}
+		}
+
+		results[expectedFile] = result
+	}
+
+	return results
+}
+
+// ValidateWithDependencies validates a single QMD file using two-phase approach:
+// Phase 1: check-compatibility for hash validation
+// Phase 2: apply-diffs for structural validation (only if Phase 1 passes)
 func ValidateWithDependencies(qmdPath string, hashtabPath string, treePath string, qmldiffBinary string) (map[string]*qmd.ValidationResult, error) {
 	logging.Info(logging.ComponentQMLDiff, "Validating QMD with dependency tracking: %s", qmdPath)
 
+	// Build dependency info for UI reporting
 	depInfo, err := qmd.BuildDependencyInfo(qmdPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build dependency info: %w", err)
@@ -227,14 +331,23 @@ func ValidateWithDependencies(qmdPath string, hashtabPath string, treePath strin
 	logging.Debug(logging.ComponentQMLDiff, "QMD absolute path: %s", qmdPath)
 	logging.Debug(logging.ComponentQMLDiff, "QMD directory: %s", qmdDir)
 
-	logging.Debug(logging.ComponentQMLDiff, "Listing QMD files in temp directory:")
-	filepath.Walk(qmdDir, func(path string, info os.FileInfo, err error) error {
-		if err == nil && !info.IsDir() && strings.HasSuffix(path, ".qmd") {
-			relPath, _ := filepath.Rel(qmdDir, path)
-			logging.Debug(logging.ComponentQMLDiff, "  Found: %s", relPath)
-		}
-		return nil
-	})
+	// Phase 1: Check hash compatibility
+	logging.Info(logging.ComponentQMLDiff, "Phase 1: Running check-compatibility")
+	compatResult, err := CheckCompatibility([]string{qmdPath}, hashtabPath, qmldiffBinary)
+	if err != nil {
+		return nil, fmt.Errorf("check-compatibility failed: %w", err)
+	}
+
+	if compatResult.HasErrors {
+		// Hash errors found - return them without running apply-diffs
+		logging.Info(logging.ComponentQMLDiff, "Phase 1 failed: %d hash errors found", compatResult.TotalErrors)
+		return reconcileHashErrors(depInfo, compatResult), nil
+	}
+
+	logging.Info(logging.ComponentQMLDiff, "Phase 1 passed: No hash errors")
+
+	// Phase 2: Run apply-diffs for structural validation
+	logging.Info(logging.ComponentQMLDiff, "Phase 2: Running apply-diffs for structural validation")
 
 	outputDir, err := os.MkdirTemp("", "qmldiff-output-*")
 	if err != nil {
@@ -246,47 +359,38 @@ func ValidateWithDependencies(qmdPath string, hashtabPath string, treePath strin
 		qmldiffBinary,
 		"apply-diffs",
 		"--hashtab", hashtabPath,
-		"--collect-hash-errors",
 		treePath,
 		outputDir,
 		qmdPath,
 	)
 
-	logging.Debug(logging.ComponentQMLDiff, "qmldiff command: %s", strings.Join(cmd.Args, " "))
-	if cmd.Dir != "" {
-		logging.Debug(logging.ComponentQMLDiff, "qmldiff working directory: %s", cmd.Dir)
-	} else {
-		cwd, _ := os.Getwd()
-		logging.Debug(logging.ComponentQMLDiff, "qmldiff working directory: %s (current process dir)", cwd)
-	}
+	logging.Debug(logging.ComponentQMLDiff, "apply-diffs command: %s", strings.Join(cmd.Args, " "))
 
 	output, err := cmd.CombinedOutput()
 	outputStr := string(output)
 
-	logging.Debug(logging.ComponentQMLDiff, "qmldiff output:\n%s", outputStr)
+	logging.Debug(logging.ComponentQMLDiff, "apply-diffs output:\n%s", outputStr)
 
-	parsed := qmd.ParseQmdiffOutput(outputStr)
+	parsed := qmd.ParseApplyDiffsOutput(outputStr)
 
 	if err != nil {
 		exitCode := -1
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
-			logging.Debug(logging.ComponentQMLDiff, "qmldiff exit code: %d", exitCode)
+			logging.Debug(logging.ComponentQMLDiff, "apply-diffs exit code: %d", exitCode)
 		} else {
-			logging.Debug(logging.ComponentQMLDiff, "qmldiff error: %v", err)
+			logging.Debug(logging.ComponentQMLDiff, "apply-diffs error: %v", err)
 		}
 
-		if exitCode == 1 && strings.Contains(outputStr, "Hash lookup errors found:") {
-			logging.Debug(logging.ComponentQMLDiff, "qmldiff found hash errors (exit 1)")
-		} else if parsed.HadPanic && len(parsed.HashErrors) == 0 {
+		if parsed.HadPanic {
 			panicMsg := extractPanicMessage(outputStr)
-			logging.Warn(logging.ComponentQMLDiff, "qmldiff panicked: %s", panicMsg)
+			logging.Warn(logging.ComponentQMLDiff, "apply-diffs panicked: %s", panicMsg)
 			return createErrorResults(depInfo, fmt.Sprintf("qmldiff panicked: %s", panicMsg)), fmt.Errorf("qmldiff panicked")
-		} else if exitCode > 1 && !parsed.HadPanic {
-			logging.Warn(logging.ComponentQMLDiff, "qmldiff failed (exit %d), attempting to use partial results", exitCode)
+		} else if exitCode > 0 {
+			logging.Warn(logging.ComponentQMLDiff, "apply-diffs failed (exit %d), attempting to use partial results", exitCode)
 		}
 	} else {
-		logging.Debug(logging.ComponentQMLDiff, "qmldiff exit code: 0 (success)")
+		logging.Debug(logging.ComponentQMLDiff, "apply-diffs exit code: 0 (success)")
 	}
 
 	results := qmd.ReconcileResults(depInfo, parsed)

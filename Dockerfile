@@ -18,9 +18,8 @@ WORKDIR /build
 
 RUN apk add --no-cache git musl-dev
 
-# Clone qmldiff repository (qmdverify branch)
-RUN git clone --depth 1 --branch qmdverify \
-    https://github.com/rmitchellscott/qmldiff.git qmldiff
+# Clone upstream qmldiff repository
+RUN git clone --depth 1 https://github.com/asivery/qmldiff.git qmldiff
 
 # Build qmldiff CLI binary
 WORKDIR /build/qmldiff

@@ -37,7 +37,14 @@ type HashError struct {
 	Error  string `json:"error"`
 }
 
-// ParsedOutput contains all parsed information from qmldiff output
+// CheckCompatibilityResult contains results from qmldiff check-compatibility command
+type CheckCompatibilityResult struct {
+	HasErrors   bool
+	HashErrors  map[string][]uint64 // filename -> list of missing hash IDs
+	TotalErrors int
+}
+
+// ParsedOutput contains all parsed information from qmldiff apply-diffs output
 type ParsedOutput struct {
 	HashErrors       map[string][]HashError  // QMD file -> hash errors
 	ProcessErrors    map[string][]string     // QMD file -> process errors
@@ -49,8 +56,54 @@ type ParsedOutput struct {
 	PanicFile        string                  // The file being processed when panic occurred
 }
 
-// ParseQmdiffOutput parses the output from qmldiff CLI
-func ParseQmdiffOutput(output string) *ParsedOutput {
+var (
+	checkCompatHashRegex = regexp.MustCompile(`^\s*-\s+(\d+) required by (.+)`)
+	totalErrorsRegex     = regexp.MustCompile(`Total errors: (\d+)`)
+)
+
+// ParseCheckCompatibilityOutput parses the output from qmldiff check-compatibility command
+// Output format:
+//
+//	Hash errors:
+//	 - 214620122227 required by file1.qmd, file2.qmd
+//	Total errors: N
+func ParseCheckCompatibilityOutput(output string) *CheckCompatibilityResult {
+	result := &CheckCompatibilityResult{
+		HashErrors: make(map[string][]uint64),
+	}
+
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+
+		if matches := checkCompatHashRegex.FindStringSubmatch(line); len(matches) == 3 {
+			hashID, err := strconv.ParseUint(matches[1], 10, 64)
+			if err != nil {
+				continue
+			}
+			// matches[2] contains "file1.qmd, file2.qmd" - split by ", "
+			files := strings.Split(matches[2], ", ")
+			for _, file := range files {
+				file = strings.TrimSpace(file)
+				if file != "" {
+					result.HashErrors[file] = append(result.HashErrors[file], hashID)
+				}
+			}
+			logging.Debug(logging.ComponentQMD, "Parsed check-compatibility hash error: hash %d required by %v", hashID, files)
+		}
+
+		if matches := totalErrorsRegex.FindStringSubmatch(line); len(matches) == 2 {
+			result.TotalErrors, _ = strconv.Atoi(matches[1])
+			result.HasErrors = result.TotalErrors > 0
+			logging.Debug(logging.ComponentQMD, "Parsed check-compatibility total errors: %d", result.TotalErrors)
+		}
+	}
+
+	return result
+}
+
+// ParseApplyDiffsOutput parses the output from qmldiff apply-diffs CLI
+// This is used for structural error detection (panics, process errors)
+func ParseApplyDiffsOutput(output string) *ParsedOutput {
 	result := &ParsedOutput{
 		HashErrors:     make(map[string][]HashError),
 		ProcessErrors:  make(map[string][]string),
