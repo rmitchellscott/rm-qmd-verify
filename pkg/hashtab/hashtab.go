@@ -9,6 +9,8 @@ import (
 	"strings"
 )
 
+const maxStringLength = 10 * 1024 * 1024 // 10MB
+
 type Hashtab struct {
 	Name      string
 	Path      string
@@ -89,6 +91,10 @@ func loadHashtab(file *os.File) (map[uint64]string, string, error) {
 		err = binary.Read(file, binary.BigEndian, &length)
 		if err != nil {
 			return nil, "", fmt.Errorf("failed to read length: %w", err)
+		}
+
+		if length > maxStringLength {
+			return nil, "", fmt.Errorf("string length %d exceeds maximum %d, file is likely not a valid hashtab", length, maxStringLength)
 		}
 
 		data := make([]byte, length)

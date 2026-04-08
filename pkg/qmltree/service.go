@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -81,6 +82,10 @@ func (s *Service) CheckAndReload() error {
 
 	for _, entry := range entries {
 		if !entry.IsDir() {
+			continue
+		}
+
+		if strings.HasPrefix(entry.Name(), "@") || strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
 
@@ -178,6 +183,9 @@ func (s *Service) load() error {
 		}
 
 		name := entry.Name()
+		if strings.HasPrefix(name, "@") || strings.HasPrefix(name, ".") {
+			continue
+		}
 		path := filepath.Join(s.dir, name)
 
 		// Create Tree object

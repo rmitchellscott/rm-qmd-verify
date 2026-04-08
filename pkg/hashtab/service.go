@@ -4,11 +4,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/rmitchellscott/rm-qmd-verify/internal/logging"
 )
+
+func shouldSkip(name string, isDir bool) bool {
+	if isDir {
+		return strings.HasPrefix(name, "@")
+	}
+	return strings.HasPrefix(name, ".") || strings.Contains(name, "@")
+}
 
 type Service struct {
 	hashtables []*Hashtab
@@ -49,6 +57,14 @@ func (s *Service) loadHashtables() error {
 	err := filepath.WalkDir(s.dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+
+		name := d.Name()
+		if shouldSkip(name, d.IsDir()) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 
 		if d.IsDir() {
@@ -107,6 +123,14 @@ func (s *Service) CheckAndReload() error {
 			return err
 		}
 
+		name := d.Name()
+		if shouldSkip(name, d.IsDir()) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
 		if d.IsDir() {
 			return nil
 		}
@@ -154,6 +178,14 @@ func (s *Service) CheckAndReload() error {
 	err = filepath.WalkDir(s.dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+
+		name := d.Name()
+		if shouldSkip(name, d.IsDir()) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 
 		if d.IsDir() {
