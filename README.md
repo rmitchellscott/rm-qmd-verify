@@ -317,5 +317,6 @@ docker run -d -p 8080:8080 \
 - **Job Processing:** Background job queue with concurrent validation support
 
 ## License
+Copyright (C) 2025 Mitchell Scott
 
-MIT
+Licensed under the GNU Affero General Public License v3.0.
