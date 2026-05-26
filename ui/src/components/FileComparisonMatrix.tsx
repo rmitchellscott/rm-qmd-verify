@@ -10,6 +10,7 @@ const deviceNames: Record<string, { short: string; full: string }> = {
   'rm2': { short: 'rM2', full: 'reMarkable 2' },
   'rmpp': { short: 'rMPP', full: 'Paper Pro' },
   'rmppm': { short: 'rMPPM', full: 'Paper Pro Move' },
+  'rmppure': { short: 'rMPPure', full: 'Paper Pure' },
 };
 
 function parseVersion(version: string): number[] {
@@ -59,12 +60,12 @@ export function FileComparisonMatrix({
   results,
   files,
   onRowClick,
-  filterDevices = ['rm1', 'rm2', 'rmpp', 'rmppm'],
+  filterDevices = ['rm1', 'rm2', 'rmpp', 'rmppm', 'rmppure'],
   filterMinVersion = null,
   filterMaxVersion = null
 }: FileComparisonMatrixProps) {
   const [expandedRoots, setExpandedRoots] = useState<Set<string>>(new Set());
-  const deviceKeys = ['rm1', 'rm2', 'rmpp', 'rmppm'].filter(d => filterDevices.includes(d));
+  const deviceKeys = ['rm1', 'rm2', 'rmpp', 'rmppm', 'rmppure'].filter(d => filterDevices.includes(d));
 
   const toggleExpanded = (filename: string) => {
     setExpandedRoots(prev => {

@@ -8,7 +8,7 @@ export interface FilterPreferences {
 }
 
 const STORAGE_KEY = 'qmd-verify-filters';
-const ALL_DEVICES = ['rm1', 'rm2', 'rmpp', 'rmppm'];
+const ALL_DEVICES = ['rm1', 'rm2', 'rmpp', 'rmppm', 'rmppure'];
 
 const DEFAULT_PREFERENCES: FilterPreferences = {
   selectedDevices: ALL_DEVICES,

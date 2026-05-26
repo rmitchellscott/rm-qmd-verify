@@ -6,6 +6,7 @@ const DEVICE_INFO: Record<string, { short: string; full: string }> = {
   'rm2': { short: 'rM2', full: 'reMarkable 2' },
   'rmpp': { short: 'rMPP', full: 'Paper Pro' },
   'rmppm': { short: 'rMPPM', full: 'Paper Pro Move' },
+  'rmppure': { short: 'rMPPure', full: 'Paper Pure' },
 };
 
 interface DeviceSelectorProps {
@@ -13,7 +14,7 @@ interface DeviceSelectorProps {
   onChange: (devices: string[]) => void;
 }
 
-const FIXED_DEVICE_ORDER = ['rm1', 'rm2', 'rmpp', 'rmppm'];
+const FIXED_DEVICE_ORDER = ['rm1', 'rm2', 'rmpp', 'rmppm', 'rmppure'];
 
 export function DeviceSelector({ selectedDevices, onChange }: DeviceSelectorProps) {
   const handleToggle = (device: string, checked: boolean) => {

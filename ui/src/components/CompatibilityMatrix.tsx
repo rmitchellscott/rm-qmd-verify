@@ -44,6 +44,7 @@ const deviceNames: Record<string, { short: string; full: string }> = {
   'rm2': { short: 'rM2', full: 'reMarkable 2' },
   'rmpp': { short: 'rMPP', full: 'Paper Pro' },
   'rmppm': { short: 'rMPPM', full: 'Paper Pro Move' },
+  'rmppure': { short: 'rMPPure', full: 'Paper Pure' },
 };
 
 interface VersionInfo {
@@ -89,7 +90,7 @@ interface CompatibilityMatrixProps {
 
 export function CompatibilityMatrix({
   results,
-  filterDevices = ['rm1', 'rm2', 'rmpp', 'rmppm'],
+  filterDevices = ['rm1', 'rm2', 'rmpp', 'rmppm', 'rmppure'],
   filterMinVersion = null,
   filterMaxVersion = null
 }: CompatibilityMatrixProps) {
@@ -146,7 +147,7 @@ export function CompatibilityMatrix({
       allResults = allResults.filter(result => filterDevices.includes(result.device));
     }
 
-    const deviceKeys = ['rm1', 'rm2', 'rmpp', 'rmppm'].filter(d => filterDevices.includes(d));
+    const deviceKeys = ['rm1', 'rm2', 'rmpp', 'rmppm', 'rmppure'].filter(d => filterDevices.includes(d));
 
     const matrix: Record<string, Record<string, ComparisonResult | null>> = {};
     allResults.forEach(result => {
